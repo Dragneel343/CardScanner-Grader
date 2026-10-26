@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Card Scanner</string>
+    <string name="capture_button">Capture</string>
+    <string name="camera_permission_rationale">Camera access is required to scan cards.</string>
+</resources>

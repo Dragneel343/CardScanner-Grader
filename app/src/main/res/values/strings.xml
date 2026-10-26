@@ -3,4 +3,15 @@
     <string name="app_name">Card Scanner</string>
     <string name="capture_button">Capture</string>
     <string name="camera_permission_rationale">Camera access is required to scan cards.</string>
+    <string name="auto_capture_toggle">Auto-capture</string>
+    <string name="grade_a_card_button">Grade a Card</string>
+    <string name="back_button">← Home</string>
+    <string name="select_side_title">Select a Side</string>
+    <string name="side_front_button">Front</string>
+    <string name="side_back_button">Back</string>
+    <string name="side_checkmark">✓ Captured</string>
+    <string name="review_title_front">Front of Card</string>
+    <string name="review_title_back">Back of Card</string>
+    <string name="retake_button">Retake</string>
+    <string name="confirm_button">Confirm</string>
 </resources>

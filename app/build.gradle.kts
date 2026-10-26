@@ -40,12 +40,15 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
 
-    // CameraX - preview, capture, and Camera2 interop for manual/RAW control later
-    val cameraxVersion = "1.3.4"
+    // CameraX 1.6.x - needed for native RAW/DNG capture support (OUTPUT_FORMAT_RAW_JPEG), added in 1.5.0
+    val cameraxVersion = "1.6.2"
     implementation("androidx.camera:camera-core:$cameraxVersion")
     implementation("androidx.camera:camera-camera2:$cameraxVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+
+    // Live card edge/contour detection for the capture-screen overlay.
+    implementation("org.opencv:opencv:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")

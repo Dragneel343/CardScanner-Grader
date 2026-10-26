@@ -10,3 +10,6 @@ captures/
 *.apk
 *.aab
 .kotlin/
+
+# Claude Code project files (commands, local settings) — kept local, never pushed.
+.claude/

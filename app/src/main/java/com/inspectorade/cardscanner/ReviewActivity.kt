@@ -1,8 +1,10 @@
 package com.inspectorade.cardscanner
 
 import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
 import com.inspectorade.cardscanner.databinding.ActivityReviewBinding
@@ -11,8 +13,9 @@ import com.inspectorade.cardscanner.databinding.ActivityReviewBinding
  * Shown right after a capture so the user can check framing/focus before
  * committing to it. Retake discards the just-captured file(s) from MediaStore
  * and returns to the camera for another attempt. Confirm keeps the files and
- * reports RESULT_OK back up the chain (to CaptureActivity, which forwards it
- * to whoever launched it — e.g. CardSidesActivity marking that side done).
+ * moves on to centering; when that's done, its RESULT_OK (with the centering
+ * summary) is forwarded up the chain to CaptureActivity and then to whoever
+ * launched it — e.g. CardSidesActivity marking that side done.
  */
 class ReviewActivity : AppCompatActivity() {
 
@@ -40,10 +43,22 @@ class ReviewActivity : AppCompatActivity() {
         }
 
         binding.confirmButton.setOnClickListener {
-            setResult(Activity.RESULT_OK)
-            finish()
+            centeringLauncher.launch(
+                Intent(this, CenteringActivity::class.java)
+                    .putExtra(CenteringActivity.EXTRA_JPEG_URI, jpegUri.toString())
+                    .putExtra(CenteringActivity.EXTRA_SIDE, side)
+            )
         }
     }
+
+    // Backing out of centering returns here so the user can still retake.
+    private val centeringLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == Activity.RESULT_OK) {
+                setResult(Activity.RESULT_OK, result.data)
+                finish()
+            }
+        }
 
     private fun deleteUri(uri: Uri?) {
         uri ?: return

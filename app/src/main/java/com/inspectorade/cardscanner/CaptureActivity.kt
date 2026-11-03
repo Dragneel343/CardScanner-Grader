@@ -42,6 +42,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.doOnLayout
 import androidx.core.view.marginBottom
 import androidx.core.view.marginTop
 import androidx.core.view.updateLayoutParams
@@ -105,7 +106,7 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
     private val reviewLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
-                setResult(RESULT_OK)
+                setResult(RESULT_OK, result.data)
                 finish()
             }
         }
@@ -217,6 +218,13 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
 
     private fun startCamera() {
         binding.statusText.text = ""
+        // The shared ViewPort (see bindCamera) can only be taken once the preview
+        // has a size. Binding before layout silently skipped it, so the preview,
+        // live analysis, and saved photo each showed a different field of view.
+        binding.previewView.doOnLayout { bindCamera() }
+    }
+
+    private fun bindCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
 
         cameraProviderFuture.addListener({
@@ -284,16 +292,21 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
                 is3ALocked = false
                 lastFocusDistance = null
 
-                // A shared ViewPort keeps Preview and ImageAnalysis showing the exact
-                // same field of view, so a point found in an analysis frame maps onto
-                // the preview with a straightforward crop-rect-based transform (see
-                // analyzeFrameForCardOutline) instead of having to reconcile two
-                // independently-cropped streams.
+                // A shared ViewPort keeps Preview, ImageAnalysis, and ImageCapture
+                // showing the exact same field of view: a point found in an analysis
+                // frame maps onto the preview with a straightforward crop-rect-based
+                // transform (see analyzeFrameForCardOutline), and the saved photo is
+                // what the user framed.
                 val useCaseGroupBuilder = UseCaseGroup.Builder()
                     .addUseCase(preview)
                     .addUseCase(imageAnalysis)
                     .addUseCase(capture)
-                binding.previewView.viewPort?.let { useCaseGroupBuilder.setViewPort(it) }
+                val viewPort = binding.previewView.viewPort
+                if (viewPort != null) {
+                    useCaseGroupBuilder.setViewPort(viewPort)
+                } else {
+                    Log.w(TAG, "PreviewView has no ViewPort; outline and photo may not match the preview")
+                }
 
                 camera = cameraProvider.bindToLifecycle(this, cameraSelector, useCaseGroupBuilder.build())
                 meteringStatusText = "Tap card to focus & lock"

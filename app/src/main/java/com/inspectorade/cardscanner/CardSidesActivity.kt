@@ -24,11 +24,14 @@ class CardSidesActivity : AppCompatActivity() {
     private lateinit var binding: ActivityCardSidesBinding
     private var frontDone = false
     private var backDone = false
+    private var frontSummary: String? = null
+    private var backSummary: String? = null
 
     private val frontLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 frontDone = true
+                frontSummary = result.data?.getStringExtra(CenteringActivity.EXTRA_CENTERING_SUMMARY)
                 updateCheckmarks()
             }
         }
@@ -37,6 +40,7 @@ class CardSidesActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 backDone = true
+                backSummary = result.data?.getStringExtra(CenteringActivity.EXTRA_CENTERING_SUMMARY)
                 updateCheckmarks()
             }
         }
@@ -75,5 +79,12 @@ class CardSidesActivity : AppCompatActivity() {
     private fun updateCheckmarks() {
         binding.frontCheckmark.visibility = if (frontDone) View.VISIBLE else View.INVISIBLE
         binding.backCheckmark.visibility = if (backDone) View.VISIBLE else View.INVISIBLE
+        binding.frontCheckmark.text = checkmarkText(frontSummary)
+        binding.backCheckmark.text = checkmarkText(backSummary)
+    }
+
+    private fun checkmarkText(summary: String?): String {
+        val captured = getString(R.string.side_checkmark)
+        return if (summary == null) captured else "$captured\n$summary"
     }
 }

@@ -27,6 +27,7 @@ import com.inspectorade.cardscanner.grading.CardLayout
 import com.inspectorade.cardscanner.grading.CenteringReading
 import com.inspectorade.cardscanner.grading.CenteringStandards
 import com.inspectorade.cardscanner.grading.LineStyle
+import com.inspectorade.cardscanner.identify.TcgdexClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -36,7 +37,8 @@ import java.util.Locale
 /**
  * Flattens the confirmed capture, auto-places the outer/inner border lines, and
  * lets the user refine them while live centering ratios and per-grader centering
- * grades update. Done returns a one-line summary to the caller.
+ * grades update. The card (if identified on [CardSelectActivity]) and its layout
+ * arrive as extras. Done returns a one-line summary to the caller.
  */
 class CenteringActivity : AppCompatActivity() {
 
@@ -45,8 +47,9 @@ class CenteringActivity : AppCompatActivity() {
     private var currentBitmap: Bitmap? = null
     private var isFront = true
     private var layout = CardLayout.STANDARD
+    private var cardLabel: String? = null
 
-    // Whatever the hint said before switching to e-Reader (it may be a
+    // Whatever the hint said before switching to an e-Reader layout (it may be a
     // "card not found"/"too small" warning), restored when switching back.
     private var standardHint: CharSequence = ""
 
@@ -65,6 +68,10 @@ class CenteringActivity : AppCompatActivity() {
         binding.centeringTitle.text = getString(
             if (isFront) R.string.centering_title_front else R.string.centering_title_back
         )
+        val initialLayout = intent.getStringExtra(EXTRA_LAYOUT)
+            ?.let { name -> CardLayout.entries.firstOrNull { it.name == name } }
+            ?: CardLayout.STANDARD
+        showIdentifiedCard()
 
         binding.centeringView.onLinesChanged = ::updateReadout
         binding.resetLinesButton.setOnClickListener {
@@ -75,7 +82,7 @@ class CenteringActivity : AppCompatActivity() {
         }
         binding.centeringDoneButton.setOnClickListener { finishWithSummary() }
         binding.lineColorsButton.setOnClickListener { showLineColorsDialog() }
-        binding.layoutButton.setOnClickListener { toggleLayout() }
+        binding.layoutButton.setOnClickListener { cycleLayout() }
 
         val jpegUri = intent.getStringExtra(EXTRA_JPEG_URI)?.toUri()
         if (jpegUri == null || !OpenCVLoader.initLocal()) {
@@ -88,12 +95,12 @@ class CenteringActivity : AppCompatActivity() {
             val analysis = try {
                 withContext(Dispatchers.Default) {
                     val photo = CardFlattener.loadUpright(contentResolver, jpegUri)
-                    val flattened = try {
-                        CardFlattener.flatten(photo)
+                    try {
+                        val flattened = CardFlattener.flatten(photo)
+                        flattened to BorderDetector.detect(flattened.bitmap, CardFlattener.MARGIN)
                     } finally {
                         photo.release()
                     }
-                    flattened to BorderDetector.detect(flattened.bitmap, CardFlattener.MARGIN)
                 }
             } catch (exc: Exception) {
                 Log.e(TAG, "Centering analysis failed", exc)
@@ -116,29 +123,52 @@ class CenteringActivity : AppCompatActivity() {
                 binding.hintText.setText(R.string.centering_card_too_small)
             }
             standardHint = binding.hintText.text
-            updateReadout()
+            applyLayout(initialLayout)
+        }
+    }
+
+    /** The card chosen on the previous screen, with its official thumbnail. */
+    private fun showIdentifiedCard() {
+        cardLabel = intent.getStringExtra(EXTRA_CARD_LABEL) ?: return
+        binding.cardIdentityText.text = getString(R.string.identify_result, cardLabel)
+        binding.cardIdentityText.visibility = View.VISIBLE
+        val imageBase = intent.getStringExtra(EXTRA_CARD_IMAGE) ?: return
+        lifecycleScope.launch {
+            val thumb = runCatching { TcgdexClient.image(imageBase) }.getOrNull() ?: return@launch
+            binding.referenceThumb.setImageBitmap(thumb)
+            binding.referenceThumb.visibility = View.VISIBLE
         }
     }
 
     private fun updateReadout() {
         val reading = binding.centeringView.currentLines()?.reading(layout) ?: return
         binding.ratioText.text = String.format(
-            Locale.US, "%s %.1f / %.1f    %s %.1f / %.1f",
+            Locale.US, "%s %.1f / %.1f    %s %.1f / %.1f%s",
             reading.firstLabel, reading.firstShare, 100 - reading.firstShare,
             reading.secondLabel, reading.secondShare, 100 - reading.secondShare,
+            if (reading.secondGraded) "" else "*",
         )
         binding.gradeText.text = gradeSummary(reading)
     }
 
-    private fun toggleLayout() {
-        layout = if (layout == CardLayout.STANDARD) CardLayout.E_READER else CardLayout.STANDARD
+    private fun cycleLayout() {
+        val all = CardLayout.entries
+        applyLayout(all[(all.indexOf(layout) + 1) % all.size])
+    }
+
+    private fun applyLayout(newLayout: CardLayout) {
+        layout = newLayout
         binding.layoutButton.setText(
-            if (layout == CardLayout.STANDARD) R.string.layout_standard else R.string.layout_e_reader
+            when (layout) {
+                CardLayout.STANDARD -> R.string.layout_standard
+                CardLayout.E_READER -> R.string.layout_e_reader
+                CardLayout.EX_DOT_CODE -> R.string.layout_ex_dot_code
+            }
         )
-        if (layout == CardLayout.E_READER) {
-            binding.hintText.setText(R.string.centering_e_reader_hint)
-        } else {
-            binding.hintText.text = standardHint
+        when (layout) {
+            CardLayout.STANDARD -> binding.hintText.text = standardHint
+            CardLayout.E_READER -> binding.hintText.setText(R.string.centering_e_reader_hint)
+            CardLayout.EX_DOT_CODE -> binding.hintText.setText(R.string.centering_ex_dot_code_hint)
         }
         updateReadout()
     }
@@ -225,8 +255,13 @@ class CenteringActivity : AppCompatActivity() {
         val reading = binding.centeringView.currentLines()?.reading(layout) ?: return
         val psa = CenteringStandards.grade(reading.worstShare, isFront).first { it.grader == "PSA" }
         val summary = String.format(
-            Locale.US, "%s%s %.0f/%.0f · %s %.0f/%.0f · PSA %s",
-            if (layout == CardLayout.E_READER) "e-Reader · " else "",
+            Locale.US, "%s%s%s %.0f/%.0f · %s %.0f/%.0f · PSA %s",
+            cardLabel?.let { "$it\n" } ?: "",
+            when (layout) {
+                CardLayout.STANDARD -> ""
+                CardLayout.E_READER -> "e-Reader · "
+                CardLayout.EX_DOT_CODE -> "EX dot-code · "
+            },
             reading.firstLabel, reading.firstShare, 100 - reading.firstShare,
             reading.secondLabel, reading.secondShare, 100 - reading.secondShare,
             psa.grade,
@@ -241,8 +276,13 @@ class CenteringActivity : AppCompatActivity() {
         // Below this, a ~4% border is under ~50 source pixels wide, so a single
         // pixel of edge error moves the ratio by a percent or more.
         private const val MIN_ACCURATE_CARD_HEIGHT_PX = 1200.0
+
         const val EXTRA_JPEG_URI = "extra_jpeg_uri"
         const val EXTRA_SIDE = "extra_side"
         const val EXTRA_CENTERING_SUMMARY = "extra_centering_summary"
+        const val EXTRA_LAYOUT = "extra_layout"
+        const val EXTRA_CARD_ID = "extra_card_id"
+        const val EXTRA_CARD_LABEL = "extra_card_label"
+        const val EXTRA_CARD_IMAGE = "extra_card_image"
     }
 }

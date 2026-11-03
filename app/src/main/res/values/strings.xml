@@ -15,8 +15,33 @@
     <string name="centering_title_front">Centering · Front</string>
     <string name="centering_title_back">Centering · Back</string>
     <string name="centering_hint">Drag a line to fine-tune it. Solid = card edge, dashed = printed border. ≈ = grader standard not yet verified.</string>
-    <string name="layout_standard">Layout: Standard ⇄ (tap for e-Reader)</string>
-    <string name="layout_e_reader">Layout: e-Reader ⇄ (tap for Standard)</string>
+    <string name="layout_standard">Layout: Standard ⇄</string>
+    <string name="layout_e_reader">Layout: e-Card (e-Reader) ⇄</string>
+    <string name="layout_ex_dot_code">Layout: EX dot-code ⇄</string>
+    <string name="centering_ex_dot_code_hint">EX dot-code card: the bottom border is wide by design for the dot-code strip, so only left/right counts toward the grade for now. *Top/bottom is shown but not graded.</string>
+    <string name="identify_result">✓ %1$s</string>
+    <string name="identify_thumb_description">Official image of the identified card</string>
+    <string name="card_select_title">Which card is this?</string>
+    <string name="card_select_reading">Reading card…</string>
+    <string name="card_select_looking_up">Looking it up…</string>
+    <string name="card_select_searching">Searching…</string>
+    <string name="card_select_confident">Found it — check it matches your card, then confirm.</string>
+    <plurals name="card_select_choose">
+        <item quantity="one">1 possible match — tap it to compare.</item>
+        <item quantity="other">%1$d possible printings — tap yours to compare.</item>
+    </plurals>
+    <string name="card_select_no_match">Couldn\'t identify this card — search by name, or skip.</string>
+    <string name="card_select_search_none">No cards found for \"%1$s\".</string>
+    <string name="card_select_offline">Couldn\'t look up the card (offline?) — try searching, or skip.</string>
+    <string name="card_select_failed">Couldn\'t read this photo — search by name, or skip.</string>
+    <string name="card_select_yours">Your card</string>
+    <string name="card_select_official">Official image</string>
+    <string name="card_select_no_image">No official image\navailable for this card</string>
+    <string name="card_select_thumb_caption">%1$s\n%2$s</string>
+    <string name="card_select_search_hint">Search: name and number, e.g. Ninjask 38</string>
+    <string name="card_select_search">Search</string>
+    <string name="card_select_skip">Skip</string>
+    <string name="card_select_confirm">Confirm card</string>
     <string name="centering_e_reader_hint">e-Reader cards have wider left and bottom borders for the dot-code strip, so top is compared with right, and left with bottom (collector convention). Put the dashed lines where the border meets the card frame, past the strip.</string>
     <string name="line_colors_button">Colors</string>
     <string name="line_colors_title">Line colors</string>

@@ -40,7 +40,30 @@ object CardFlattener {
      * pixels — the real resolution behind the measurement, since the output is
      * always resampled to [CARD_HEIGHT]. Null if no card was found.
      */
-    class Result(val bitmap: Bitmap, val cardFound: Boolean, val sourceCardHeight: Double?)
+    class Result(
+        val bitmap: Bitmap,
+        val cardFound: Boolean,
+        val sourceCardHeight: Double?,
+        /** Final card corners (TL, TR, BR, BL) in the source photo, if a card was found. */
+        val cornersInPhoto: Array<Point>?,
+    )
+
+    /**
+     * Just the card (no margin), flattened at [scale]× the standard size. Text
+     * recognition needs this: a card's collector number is tiny print, too small
+     * to read reliably at the standard [CARD_WIDTH], though the photo has the detail.
+     */
+    fun cardOnly(rgba: Mat, corners: Array<Point>, scale: Int): Bitmap {
+        val width = CARD_WIDTH * scale
+        val height = CARD_HEIGHT * scale
+        val dst = arrayOf(
+            Point(0.0, 0.0),
+            Point(width.toDouble(), 0.0),
+            Point(width.toDouble(), height.toDouble()),
+            Point(0.0, height.toDouble()),
+        )
+        return warp(rgba, corners, dst, width, height)
+    }
 
     /**
      * Decodes [uri] at full resolution (border widths are only a few percent of
@@ -78,7 +101,7 @@ object CardFlattener {
      */
     fun flatten(rgba: Mat): Result {
         val rough = detectCorners(rgba)
-            ?: return Result(warp(rgba, wholeImageCorners(rgba), wholeOutputCorners()), false, null)
+            ?: return Result(warp(rgba, wholeImageCorners(rgba), wholeOutputCorners()), false, null, null)
 
         // Warp with the current corners, fit the card's real edges in that
         // nearly-square view, and map the refined corners back to the original
@@ -92,13 +115,13 @@ object CardFlattener {
             flattened.getPixels(pixels, 0, flattened.width, 0, 0, flattened.width, flattened.height)
             val refined = CardEdgeRefiner.refine(
                 pixels, flattened.width, flattened.height, MARGIN, CARD_WIDTH, CARD_HEIGHT
-            ) ?: return Result(flattened, true, cardHeight(corners))
+            ) ?: return Result(flattened, true, cardHeight(corners), corners)
 
             corners = mapPoints(refined, from = canonicalCorners(), to = corners)
             flattened.recycle()
             flattened = warp(rgba, corners, canonicalCorners())
         }
-        return Result(flattened, true, cardHeight(corners))
+        return Result(flattened, true, cardHeight(corners), corners)
     }
 
     /** Average length of the left and right edges of a TL, TR, BR, BL quad. */
@@ -129,9 +152,13 @@ object CardFlattener {
         return arrayOf(Point(0.0, 0.0), Point(w, 0.0), Point(w, h), Point(0.0, h))
     }
 
-    private fun warp(rgba: Mat, src: Array<Point>, dst: Array<Point>): Bitmap {
-        val outWidth = CARD_WIDTH + 2 * MARGIN
-        val outHeight = CARD_HEIGHT + 2 * MARGIN
+    private fun warp(
+        rgba: Mat,
+        src: Array<Point>,
+        dst: Array<Point>,
+        outWidth: Int = CARD_WIDTH + 2 * MARGIN,
+        outHeight: Int = CARD_HEIGHT + 2 * MARGIN,
+    ): Bitmap {
         val srcMat = MatOfPoint2f(*src)
         val dstMat = MatOfPoint2f(*dst)
         val transform = Imgproc.getPerspectiveTransform(srcMat, dstMat)

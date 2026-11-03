@@ -13,7 +13,8 @@ import com.inspectorade.cardscanner.databinding.ActivityReviewBinding
  * Shown right after a capture so the user can check framing/focus before
  * committing to it. Retake discards the just-captured file(s) from MediaStore
  * and returns to the camera for another attempt. Confirm keeps the files and
- * moves on to centering; when that's done, its RESULT_OK (with the centering
+ * moves on to card selection (front) or centering (back); when that's done, its
+ * RESULT_OK (with the centering
  * summary) is forwarded up the chain to CaptureActivity and then to whoever
  * launched it — e.g. CardSidesActivity marking that side done.
  */
@@ -42,17 +43,24 @@ class ReviewActivity : AppCompatActivity() {
             finish()
         }
 
+        // The front goes through card selection first; the back has nothing to identify.
         binding.confirmButton.setOnClickListener {
-            centeringLauncher.launch(
-                Intent(this, CenteringActivity::class.java)
-                    .putExtra(CenteringActivity.EXTRA_JPEG_URI, jpegUri.toString())
-                    .putExtra(CenteringActivity.EXTRA_SIDE, side)
+            nextLauncher.launch(
+                if (isFront) {
+                    Intent(this, CardSelectActivity::class.java)
+                        .putExtra(CardSelectActivity.EXTRA_JPEG_URI, jpegUri.toString())
+                        .putExtra(CardSelectActivity.EXTRA_SIDE, side)
+                } else {
+                    Intent(this, CenteringActivity::class.java)
+                        .putExtra(CenteringActivity.EXTRA_JPEG_URI, jpegUri.toString())
+                        .putExtra(CenteringActivity.EXTRA_SIDE, side)
+                }
             )
         }
     }
 
-    // Backing out of centering returns here so the user can still retake.
-    private val centeringLauncher =
+    // Backing out of the next screen returns here so the user can still retake.
+    private val nextLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK) {
                 setResult(Activity.RESULT_OK, result.data)

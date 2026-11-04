@@ -24,6 +24,10 @@ object CardDetector {
     private const val ASPECT_TOLERANCE = 0.25
     private const val MIN_AREA_FRACTION = 0.12
 
+    // How close (fraction of the frame's shorter side) a corner may come to the
+    // frame's edge before the quad is treated as background, not a card.
+    private const val FRAME_BORDER_FRACTION = 0.01
+
     /**
      * Looks for a quadrilateral matching a card's aspect ratio in a single-channel
      * (grayscale/luminance) Mat. Returns its four corners in the input Mat's pixel
@@ -92,10 +96,17 @@ object CardDetector {
      * against the background. Anything printed on the card is nested inside its
      * boundary, so once that boundary is a valid closed contour, EXTERNAL
      * structurally excludes it.
+     *
+     * Quads touching the frame's border are skipped: the card is framed inside
+     * the guide, so an outline running along the photo's edge is a patch of
+     * background (e.g. the surface bounded by the frame and a box behind it).
      */
     private fun bestCardQuad(binary: Mat, frameArea: Int, minAreaFraction: Double): Array<Point>? {
         val hierarchy = Mat()
         val contours = mutableListOf<MatOfPoint>()
+        val inset = minOf(binary.cols(), binary.rows()) * FRAME_BORDER_FRACTION
+        fun touchesBorder(p: Point) =
+            p.x < inset || p.y < inset || p.x > binary.cols() - 1 - inset || p.y > binary.rows() - 1 - inset
         try {
             Imgproc.findContours(binary, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
 
@@ -113,7 +124,7 @@ object CardDetector {
 
                 val points = approx.toArray()
                 approx.release()
-                if (points.size != 4) continue
+                if (points.size != 4 || points.any(::touchesBorder)) continue
 
                 val pointsAsInt = MatOfPoint(*points)
                 val convex = Imgproc.isContourConvex(pointsAsInt)

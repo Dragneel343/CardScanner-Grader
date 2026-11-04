@@ -45,11 +45,13 @@
     <string name="centering_e_reader_hint">e-Reader cards have wider left and bottom borders for the dot-code strip, so top is compared with right, and left with bottom (collector convention). Put the dashed lines where the border meets the card frame, past the strip.</string>
     <string name="line_colors_button">Colors</string>
     <string name="line_colors_title">Line colors</string>
+    <string name="line_colors_auto">Auto: best contrast for this card</string>
     <string name="line_colors_outer">Card edge (solid)</string>
     <string name="line_colors_inner">Printed border (dashed)</string>
     <string name="line_colors_done">Done</string>
     <string name="line_color_selected">%1$s, selected</string>
     <string name="centering_card_not_found">Couldn\'t find the card\'s edges automatically — drag the lines into place.</string>
+    <string name="centering_card_skewed">⚠ The card came out skewed, so these numbers aren\'t reliable. Retake — a plain background and the whole card in the guide box help.</string>
     <string name="centering_card_too_small">The card is small in this photo, so centering is less precise. Retake closer so the card fills the guide box.</string>
     <string name="centering_failed">Couldn\'t analyze this photo for centering.</string>
     <string name="reset_lines_button">Reset</string>

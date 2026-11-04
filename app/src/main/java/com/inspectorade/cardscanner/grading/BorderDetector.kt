@@ -14,40 +14,112 @@ import kotlin.math.abs
  * inner line is where the color first departs from the border's own color (see
  * [innerEdge]). Full-art and borderless cards have no real inner border, so
  * expect those to need manual adjustment.
+ *
+ * The [CardLayout] says which borders carry a dot-code strip (e-Card left and
+ * bottom, EX dot-code bottom). On those sides the strip — and the line of small
+ * print beside it — interrupt the border color and then it resumes, so there
+ * the inner line is the first departure the border color *doesn't* come back
+ * from: the card frame.
  */
 object BorderDetector {
 
     private const val STEP_HALF_WIDTH = 3
-    private const val OUTER_SEARCH_FRACTION = 0.04
+    // Flattening puts the card's edge within ~1% of the margin, so the outer line
+    // is searched only this close to it. Wider and a stronger printed edge just
+    // inside can win — a card back's swirl-to-border change, ~3% in, beats its
+    // dark border against a dark surface.
+    private const val OUTER_SEARCH_FRACTION = 0.02
     private const val INNER_MIN_FRACTION = 0.015
     private const val INNER_MAX_FRACTION = 0.15
+    // The border's own color is the median over this band just inside the edge —
+    // a median, and a band this wide, so worn edges (a whitened rim ~1% wide on a
+    // played card) or the start of a dot-code strip can't skew it.
     private const val REFERENCE_NEAR_FRACTION = 0.005
-    private const val REFERENCE_FAR_FRACTION = 0.012
+    private const val REFERENCE_FAR_FRACTION = 0.02
+
+    // Official scans are often cropped inside the card's cut, leaving as little as
+    // ~1% of border (Hitmonchan ex's top), so on a scan the border color is sampled
+    // right at the image edge and the search starts almost there.
+    private const val SCAN_REFERENCE_NEAR_FRACTION = 0.001
+    private const val SCAN_REFERENCE_FAR_FRACTION = 0.004
+    private const val SCAN_INNER_MIN_FRACTION = 0.005
     private const val MIN_DEPARTURE = 30f
     private const val DEPARTURE_FRACTION = 0.35f
     private const val SUSTAIN = 4
     private const val SNAP_BACK = 6
+    private const val RESUME_SUSTAIN = 4
 
-    fun detect(card: Bitmap, margin: Int): BorderLines {
-        val width = card.width
-        val height = card.height
-        val pixels = IntArray(width * height)
-        card.getPixels(pixels, 0, width, 0, 0, width, height)
+    fun detect(card: Bitmap, margin: Int, layout: CardLayout = CardLayout.STANDARD): BorderLines =
+        detect(card, margin, layout, outerKnown = false)
 
-        val cardWidth = width - 2 * margin
-        val cardHeight = height - 2 * margin
+    /**
+     * Inner lines of an image that is exactly the card, edge to edge — an
+     * official scan — so the outer lines are simply the image edges.
+     */
+    fun detectInner(card: Bitmap, layout: CardLayout): BorderLines =
+        detect(card, margin = 0, layout, outerKnown = true)
 
-        val columns = profile(pixels, width, height, alongX = true,
-            from = margin + (cardHeight * 0.2).toInt(), to = margin + (cardHeight * 0.8).toInt())
-        val rows = profile(pixels, width, height, alongX = false,
-            from = margin + (cardWidth * 0.2).toInt(), to = margin + (cardWidth * 0.8).toInt())
+    /**
+     * Moves each inner line of [predicted] to the sharpest step within
+     * [windowFraction] of the card's size of where it is; outer lines are kept.
+     */
+    fun snapInner(card: Bitmap, margin: Int, predicted: BorderLines, windowFraction: Double): BorderLines {
+        val profiles = Profiles(card, margin)
+        val columns = stepStrength(profiles.columns)
+        val rows = stepStrength(profiles.rows)
+        val lines = predicted.copy()
+        for (line in BorderLine.entries.filter { !it.outer }) {
+            val strength = if (line.vertical) columns else rows
+            val cardSize = if (line.vertical) profiles.cardWidth else profiles.cardHeight
+            val window = (cardSize * windowFraction).toInt()
+            val at = predicted[line].toInt()
+            // Never onto the card's own edge, always a strong step: stay clear of the outer line.
+            val gap = (cardSize * INNER_MIN_FRACTION).toInt()
+            val outer = predicted[outerOf(line)].toInt()
+            val (from, to) = if (at > outer) maxOf(at - window, outer + gap) to at + window
+            else at - window to minOf(at + window, outer - gap)
+            lines[line] = strongest(strength, from, to).toFloat()
+        }
+        return lines
+    }
+
+    private fun outerOf(inner: BorderLine) = when (inner) {
+        BorderLine.INNER_LEFT -> BorderLine.OUTER_LEFT
+        BorderLine.INNER_RIGHT -> BorderLine.OUTER_RIGHT
+        BorderLine.INNER_TOP -> BorderLine.OUTER_TOP
+        else -> BorderLine.OUTER_BOTTOM
+    }
+
+    private fun detect(card: Bitmap, margin: Int, layout: CardLayout, outerKnown: Boolean): BorderLines {
+        val profiles = Profiles(card, margin)
+        val stripLeft = layout == CardLayout.E_READER
+        val stripBottom = layout == CardLayout.E_READER || layout == CardLayout.EX_DOT_CODE
 
         val lines = BorderLines()
-        detectAxis(columns, margin, cardWidth, lines,
-            BorderLine.OUTER_LEFT, BorderLine.INNER_LEFT, BorderLine.OUTER_RIGHT, BorderLine.INNER_RIGHT)
-        detectAxis(rows, margin, cardHeight, lines,
-            BorderLine.OUTER_TOP, BorderLine.INNER_TOP, BorderLine.OUTER_BOTTOM, BorderLine.INNER_BOTTOM)
+        detectAxis(profiles.columns, margin, profiles.cardWidth, lines,
+            BorderLine.OUTER_LEFT, BorderLine.INNER_LEFT, BorderLine.OUTER_RIGHT, BorderLine.INNER_RIGHT,
+            stripAtStart = stripLeft, stripAtEnd = false, outerKnown)
+        detectAxis(profiles.rows, margin, profiles.cardHeight, lines,
+            BorderLine.OUTER_TOP, BorderLine.INNER_TOP, BorderLine.OUTER_BOTTOM, BorderLine.INNER_BOTTOM,
+            stripAtStart = false, stripAtEnd = stripBottom, outerKnown)
         return lines
+    }
+
+    /** Color profiles across the card, each averaged over the middle 60% of the other axis. */
+    private class Profiles(card: Bitmap, margin: Int) {
+        val cardWidth = card.width - 2 * margin
+        val cardHeight = card.height - 2 * margin
+        val columns: Array<FloatArray>
+        val rows: Array<FloatArray>
+
+        init {
+            val pixels = IntArray(card.width * card.height)
+            card.getPixels(pixels, 0, card.width, 0, 0, card.width, card.height)
+            columns = BorderDetector.profile(pixels, card.width, card.height, alongX = true,
+                from = margin + (cardHeight * 0.2).toInt(), to = margin + (cardHeight * 0.8).toInt())
+            rows = BorderDetector.profile(pixels, card.width, card.height, alongX = false,
+                from = margin + (cardWidth * 0.2).toInt(), to = margin + (cardWidth * 0.8).toInt())
+        }
     }
 
     private fun detectAxis(
@@ -59,18 +131,21 @@ object BorderDetector {
         innerStart: BorderLine,
         outerEnd: BorderLine,
         innerEnd: BorderLine,
+        stripAtStart: Boolean,
+        stripAtEnd: Boolean,
+        outerKnown: Boolean,
     ) {
         val strength = stepStrength(profile)
         val outerWindow = (cardSize * OUTER_SEARCH_FRACTION).toInt()
 
-        val startOuter = strongest(strength, margin - outerWindow, margin + outerWindow)
         val endEdge = margin + cardSize
-        val endOuter = strongest(strength, endEdge - outerWindow, endEdge + outerWindow)
+        val startOuter = if (outerKnown) margin else strongest(strength, margin - outerWindow, margin + outerWindow)
+        val endOuter = if (outerKnown) endEdge - 1 else strongest(strength, endEdge - outerWindow, endEdge + outerWindow)
 
         lines[outerStart] = startOuter.toFloat()
-        lines[innerStart] = innerEdge(profile, strength, startOuter, inward = 1, cardSize).toFloat()
+        lines[innerStart] = innerEdge(profile, strength, startOuter, inward = 1, cardSize, stripAtStart, outerKnown).toFloat()
         lines[outerEnd] = endOuter.toFloat()
-        lines[innerEnd] = innerEdge(profile, strength, endOuter, inward = -1, cardSize).toFloat()
+        lines[innerEnd] = innerEdge(profile, strength, endOuter, inward = -1, cardSize, stripAtEnd, outerKnown).toFloat()
     }
 
     /**
@@ -78,24 +153,24 @@ object BorderDetector {
      * border's own color — not at the strongest step, which is usually the much
      * higher-contrast art box further in. Samples the border color just inside
      * the card edge, walks inward until the color stays clearly different, then
-     * snaps to the sharpest step right around that point.
+     * snaps to the sharpest step right around that point. With [skipInterruptions]
+     * (a side with a dot-code strip), departures the border color later resumes
+     * from are passed over. [scan] is for an official scan (see the SCAN_ constants).
      */
     private fun innerEdge(
         profile: Array<FloatArray>, strength: FloatArray, outer: Int, inward: Int, cardSize: Int,
+        skipInterruptions: Boolean, scan: Boolean,
     ): Int {
-        val refNear = outer + inward * (cardSize * REFERENCE_NEAR_FRACTION).toInt()
-        val refFar = outer + inward * (cardSize * REFERENCE_FAR_FRACTION).toInt()
-        val reference = FloatArray(3)
-        var refCount = 0
-        for (i in minOf(refNear, refFar)..maxOf(refNear, refFar)) {
-            if (i !in profile.indices) continue
-            for (c in 0 until 3) reference[c] += profile[i][c]
-            refCount++
-        }
-        val searchStart = outer + inward * (cardSize * INNER_MIN_FRACTION).toInt()
+        val near = if (scan) SCAN_REFERENCE_NEAR_FRACTION else REFERENCE_NEAR_FRACTION
+        val far = if (scan) SCAN_REFERENCE_FAR_FRACTION else REFERENCE_FAR_FRACTION
+        val min = if (scan) SCAN_INNER_MIN_FRACTION else INNER_MIN_FRACTION
+        val refNear = outer + inward * maxOf(1, (cardSize * near).toInt())
+        val refFar = outer + inward * maxOf(2, (cardSize * far).toInt())
+        val samples = (minOf(refNear, refFar)..maxOf(refNear, refFar)).filter { it in profile.indices }
+        val searchStart = outer + inward * (cardSize * min).toInt()
         val searchEnd = outer + inward * (cardSize * INNER_MAX_FRACTION).toInt()
-        if (refCount == 0) return strongest(strength, minOf(searchStart, searchEnd), maxOf(searchStart, searchEnd))
-        for (c in 0 until 3) reference[c] /= refCount
+        if (samples.isEmpty()) return strongest(strength, minOf(searchStart, searchEnd), maxOf(searchStart, searchEnd))
+        val reference = FloatArray(3) { c -> samples.map { profile[it][c] }.sorted()[samples.size / 2] }
 
         val positions = generateSequence(searchStart) { it + inward }
             .takeWhile { if (inward > 0) it <= searchEnd else it >= searchEnd }
@@ -105,9 +180,25 @@ object BorderDetector {
         val maxDistance = distances.maxOrNull() ?: 0f
         val threshold = maxOf(MIN_DEPARTURE, maxDistance * DEPARTURE_FRACTION)
 
-        val departure = positions.indices.firstOrNull { i ->
-            (i until minOf(i + SUSTAIN, positions.size)).all { distances[it] > threshold }
-        }?.let { positions[it] }
+        fun departsAt(i: Int) = (i until minOf(i + SUSTAIN, positions.size)).all { distances[it] > threshold }
+        fun resumesAt(i: Int) = i + RESUME_SUSTAIN <= positions.size &&
+            (i until i + RESUME_SUSTAIN).all { distances[it] <= threshold }
+
+        var departureIndex: Int? = null
+        var i = 0
+        while (i < positions.size) {
+            if (!departsAt(i)) {
+                i++
+                continue
+            }
+            val resume = if (skipInterruptions) (i + 1 until positions.size).firstOrNull(::resumesAt) else null
+            if (resume == null) {
+                departureIndex = i
+                break
+            }
+            i = resume
+        }
+        val departure = departureIndex?.let { positions[it] }
             ?: return strongest(strength, minOf(searchStart, searchEnd), maxOf(searchStart, searchEnd))
 
         // The departure is detected a pixel or two past the true edge; snap to the

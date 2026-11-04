@@ -11,8 +11,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Reads the text that identifies a card — its name and collector number (e.g.
- * "38/97") — from a flattened, upright card image, using on-device ML Kit text
+ * Reads the text that identifies a card — its name and collector number — from a flattened, upright card image, using on-device ML Kit text
  * recognition (offline, free).
  */
 object CardTextReader {
@@ -20,22 +19,33 @@ object CardTextReader {
     data class Reading(
         /** Most likely first: the largest lines of text near the top of the card. */
         val nameCandidates: List<String>,
-        /** Collector number as printed, e.g. "38", "017" or "103a". */
-        val number: String?,
-        /** The "/97" part — the set's official card count — when printed. */
-        val setTotal: Int?,
+        /**
+         * Possible collector numbers (leading digits only, e.g. "38" from "38/97"
+         * or "103" from "103a/147"), most likely first. Several, because the bottom
+         * band holds other codes too; the lookup keeps the first one that exists
+         * for the card's name.
+         */
+        val numberCandidates: List<String>,
     )
 
     private const val TAG = "CardTextReader"
 
-    // Some e-Card numbers carry a letter for alternate printings ("103a/147").
-    // The slash is tiny print and OCR often reads it as l, I or | ("103al147").
-    private val collectorNumber = Regex("""(\d{1,3}[ab]?)\s*[/|lI]\s*(\d{1,3})""")
+    // Just the leading digits, ending where a "/" or letter starts. Everything
+    // after is unreliable tiny print ("103a/147" came back as "103al147"); the
+    // user confirms the printing from the matches instead. Up to 3 digits, so a
+    // copyright year ("2002") never qualifies.
+    private val collectorNumber = Regex("""(?<!\d)(\d{1,3})(?=\s*[/|\p{L}])""")
+
+    // A number whose slash OCR dropped altogether ("38/97" read as "3897"): the
+    // split point is unknown, so each leading 3, 2 and 1 digits are candidates.
+    private val runOnNumber = Regex("""(?<!\d)(\d{4,6})(?!\d)""")
+    private val copyrightYears = 1995..2035
 
     // Card names live in the top band; collector numbers in the bottom band.
     private const val NAME_BAND = 0.18
     private const val NUMBER_BAND = 0.80
     private const val MAX_NAME_CANDIDATES = 3
+    private const val MAX_NUMBER_CANDIDATES = 6
 
     suspend fun read(card: Bitmap): Reading {
         val text = recognize(card)
@@ -44,10 +54,15 @@ object CardTextReader {
 
         val bottomLines = lines.filter { it.boundingBox!!.top >= height * NUMBER_BAND }
         Log.d(TAG, "Bottom-band text: ${bottomLines.map { it.text }}")
-        val number = bottomLines
-            .mapNotNull { line -> collectorNumber.find(line.text)?.let { line to it } }
-            .maxByOrNull { (line, _) -> line.boundingBox!!.top }
-            ?.second
+        // The collector number is usually on the lowest line, so search bottom-up.
+        val lowestFirst = bottomLines.sortedByDescending { it.boundingBox!!.top }
+        val numbers = lowestFirst.flatMap { line -> collectorNumber.findAll(line.text).map { it.groupValues[1] } } +
+            lowestFirst.flatMap { line ->
+                runOnNumber.findAll(line.text)
+                    .map { it.groupValues[1] }
+                    .filter { it.length != 4 || it.toInt() !in copyrightYears }
+                    .flatMap { run -> (3 downTo 1).map { run.take(it) } }
+            }
 
         val names = lines
             .filter { it.boundingBox!!.bottom <= height * NAME_BAND }
@@ -57,11 +72,7 @@ object CardTextReader {
             .distinct()
             .take(MAX_NAME_CANDIDATES)
 
-        return Reading(
-            nameCandidates = names,
-            number = number?.groupValues?.get(1),
-            setTotal = number?.groupValues?.get(2)?.toIntOrNull(),
-        )
+        return Reading(nameCandidates = names, numberCandidates = numbers.distinct().take(MAX_NUMBER_CANDIDATES))
     }
 
     /** Drops HP values, energy-symbol noise and stray punctuation around the name. */

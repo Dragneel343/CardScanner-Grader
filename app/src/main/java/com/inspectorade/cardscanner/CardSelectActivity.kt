@@ -114,7 +114,7 @@ class CardSelectActivity : AppCompatActivity() {
         binding.cardSelectStatus.setText(R.string.card_select_looking_up)
         val result = try {
             val reading = CardTextReader.read(card)
-            Log.i(TAG, "Card text: names=${reading.nameCandidates} number=${reading.number}/${reading.setTotal}")
+            Log.i(TAG, "Card text: names=${reading.nameCandidates} numbers=${reading.numberCandidates}")
             CardIdentifier.identify(reading)
         } catch (exc: Exception) {
             Log.w(TAG, "Card identification failed", exc)
@@ -170,6 +170,11 @@ class CardSelectActivity : AppCompatActivity() {
             val image = ImageView(this).apply {
                 layoutParams = LinearLayout.LayoutParams((THUMB_WIDTH_DP * density).toInt(), (THUMB_HEIGHT_DP * density).toInt())
                 scaleType = ImageView.ScaleType.FIT_CENTER
+                // A card-shaped slot, so tiles with no official image still read as tappable.
+                background = GradientDrawable().apply {
+                    cornerRadius = 4 * density
+                    setColor(EMPTY_THUMB_COLOR)
+                }
                 thumbnails[match.id]?.let(::setImageBitmap)
             }
             val caption = TextView(this).apply {
@@ -177,7 +182,7 @@ class CardSelectActivity : AppCompatActivity() {
                 setTextColor(getColor(R.color.white))
                 textSize = 10f
                 gravity = Gravity.CENTER
-                maxLines = 2
+                maxLines = 3
                 width = (THUMB_WIDTH_DP * density).toInt()
             }
             val tile = LinearLayout(this).apply {
@@ -283,6 +288,7 @@ class CardSelectActivity : AppCompatActivity() {
         private const val THUMB_WIDTH_DP = 64
         private const val THUMB_HEIGHT_DP = 89
         private const val DISABLED_ALPHA = 0.4f
+        private const val EMPTY_THUMB_COLOR = 0xFF2A2A2A.toInt()
 
         const val EXTRA_JPEG_URI = "extra_jpeg_uri"
         const val EXTRA_SIDE = "extra_side"

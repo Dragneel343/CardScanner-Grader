@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import android.net.Uri
+import android.util.Log
 import com.inspectorade.cardscanner.capture.CardDetector
 import org.opencv.android.Utils
 import org.opencv.core.Core
@@ -13,6 +14,7 @@ import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.max
@@ -31,6 +33,12 @@ object CardFlattener {
     private const val DETECTION_MAX_DIM = 800.0
     private const val REFINEMENT_PASSES = 2
 
+    // Corner-placement noise; a refinement pass may make the outline this much
+    // less rectangular and still count as no worse.
+    private const val MISMATCH_TOLERANCE_DEGREES = 0.2
+
+    private const val TAG = "CardFlattener"
+
     // Far smaller than the live preview's threshold: a still being measured can
     // have the card well away from the camera and still be worth trying.
     private const val STILL_MIN_AREA_FRACTION = 0.02
@@ -46,6 +54,10 @@ object CardFlattener {
         val sourceCardHeight: Double?,
         /** Final card corners (TL, TR, BR, BL) in the source photo, if a card was found. */
         val cornersInPhoto: Array<Point>?,
+        /** The detector's corners before edge refinement, for debugging. */
+        val roughCorners: Array<Point>? = null,
+        /** See [sideMismatchDegrees]; 0 if no card was found. */
+        val sideMismatchDegrees: Double = 0.0,
     )
 
     /**
@@ -108,20 +120,46 @@ object CardFlattener {
         // photo. Each pass starts from a straighter card, so the second converges
         // onto the true edges even when the rough corners were well off. Every
         // warp samples the original photo, so the result is interpolated once.
+        //
+        // A pass is kept only if it leaves the outline at least as rectangular as
+        // before: on a worn card, the refiner can lock onto the wrong edge on part
+        // of a side (whitened edge wear, the inner border, a shadow) and tilt an
+        // edge the detector had right.
         var corners = rough
         var flattened = warp(rgba, corners, canonicalCorners())
-        repeat(REFINEMENT_PASSES) {
+        repeat(REFINEMENT_PASSES) { pass ->
             val pixels = IntArray(flattened.width * flattened.height)
             flattened.getPixels(pixels, 0, flattened.width, 0, 0, flattened.width, flattened.height)
             val refined = CardEdgeRefiner.refine(
                 pixels, flattened.width, flattened.height, MARGIN, CARD_WIDTH, CARD_HEIGHT
-            ) ?: return Result(flattened, true, cardHeight(corners), corners)
+            ) ?: return result(flattened, corners, rough)
 
-            corners = mapPoints(refined, from = canonicalCorners(), to = corners)
+            val candidate = mapPoints(refined, from = canonicalCorners(), to = corners)
+            Log.d(TAG, "Refinement pass ${pass + 1}: sides off parallel %.2f° -> %.2f°"
+                .format(sideMismatchDegrees(corners), sideMismatchDegrees(candidate)))
+            if (sideMismatchDegrees(candidate) > sideMismatchDegrees(corners) + MISMATCH_TOLERANCE_DEGREES) {
+                return result(flattened, corners, rough)
+            }
+            corners = candidate
             flattened.recycle()
             flattened = warp(rgba, corners, canonicalCorners())
         }
-        return Result(flattened, true, cardHeight(corners), corners)
+        return result(flattened, corners, rough)
+    }
+
+    private fun result(flattened: Bitmap, corners: Array<Point>, rough: Array<Point>) =
+        Result(flattened, true, cardHeight(corners), corners, rough, sideMismatchDegrees(corners))
+
+    /**
+     * How far from parallel opposite sides of a TL, TR, BR, BL outline are, in
+     * degrees (the worse pair). A card photographed straight on — which the
+     * level indicator ensures — is within a fraction of a degree; more means a
+     * corner landed off the card, and the flattened card comes out skewed.
+     */
+    fun sideMismatchDegrees(corners: Array<Point>): Double {
+        fun angle(from: Point, to: Point) = Math.toDegrees(atan2(to.y - from.y, to.x - from.x))
+        val (tl, tr, br, bl) = corners
+        return max(abs(angle(tl, tr) - angle(bl, br)), abs(angle(tl, bl) - angle(tr, br)))
     }
 
     /** Average length of the left and right edges of a TL, TR, BR, BL quad. */

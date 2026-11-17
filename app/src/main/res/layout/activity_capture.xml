@@ -50,19 +50,20 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Beside the capture button, in the bar below the preview, so it never
+         covers the card. -->
     <androidx.appcompat.widget.SwitchCompat
         android:id="@+id/autoCaptureSwitch"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
         android:padding="8dp"
-        android:background="#80000000"
         android:text="@string/auto_capture_toggle"
         android:textColor="@color/white"
         app:showText="false"
-        app:layout_constraintTop_toBottomOf="@id/statusText"
-        app:layout_constraintStart_toStartOf="@id/statusText"
-        app:layout_constraintEnd_toEndOf="@id/statusText" />
+        app:layout_constraintTop_toTopOf="@id/captureButton"
+        app:layout_constraintBottom_toBottomOf="@id/captureButton"
+        app:layout_constraintStart_toEndOf="@id/captureButton"
+        app:layout_constraintEnd_toEndOf="parent" />
 
     <Button
         android:id="@+id/captureButton"

@@ -22,7 +22,8 @@ object CardIdentifier {
     }
 
     /**
-     * [confident] means name + number left a single printing. Otherwise [matches]
+     * [confident] means name + number left a single printing, or one printing's
+     * printed number clearly matches a misread ("3897" for 38/97). Otherwise [matches]
      * lists the possibilities (e.g. "Porygon 103" is Aquapolis 103a and 103b, and
      * Burning Shadows 103) and the user chooses.
      */
@@ -32,7 +33,49 @@ object CardIdentifier {
 
     suspend fun identify(reading: CardTextReader.Reading): Result {
         val (matches, byNumber) = search(reading.nameCandidates, reading.numberCandidates)
-        return Result(matches, confident = byNumber && matches.size == 1)
+        if (byNumber && matches.size == 1) return Result(matches, confident = true)
+        // Either no number read cleanly, or several printings share it (Porygon
+        // 103a/103b/103): the full printed number, even misread, can settle it.
+        return closestPrintedNumber(matches, reading.bottomLines)
+            ?.let { best -> Result(listOf(best) + (matches - best), confident = true) }
+            ?: Result(matches, confident = false)
+    }
+
+    // A printed number counts as read if OCR's text is within this many edits of
+    // it: "38/97" read as "3897" (slash dropped) is 1, as "3R97" is 2.
+    private const val MAX_NUMBER_EDITS = 2
+
+    /**
+     * When no number read cleanly, compares each printing's printed number
+     * ("38/97") against the bottom band's text, tolerating OCR slips. Returns the
+     * printing that matches clearly better than all others, or null.
+     */
+    private fun closestPrintedNumber(matches: List<Match>, bottomLines: List<String>): Match? {
+        val tokens = bottomLines.flatMap { line -> line.split(Regex("""\s+""")) }
+            .map { it.lowercase().filter { c -> c.isLetterOrDigit() || c == '/' || c == '|' } }
+            .filter { token -> token.length >= 3 && token.any { it.isDigit() } }
+        if (tokens.isEmpty()) return null
+        val scored = matches.filter { it.setOfficial > 0 }.map { match ->
+            val printed = "${match.localId}/${match.setOfficial}".lowercase()
+            match to tokens.minOf { editDistance(it, printed) }
+        }.sortedBy { it.second }
+        val best = scored.firstOrNull() ?: return null
+        val runnerUp = scored.getOrNull(1)?.second ?: Int.MAX_VALUE
+        return best.first.takeIf { best.second <= MAX_NUMBER_EDITS && best.second < runnerUp }
+    }
+
+    private fun editDistance(a: String, b: String): Int {
+        var previous = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            val current = IntArray(b.length + 1)
+            current[0] = i
+            for (j in 1..b.length) {
+                val substitution = previous[j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1
+                current[j] = minOf(substitution, previous[j] + 1, current[j - 1] + 1)
+            }
+            previous = current
+        }
+        return previous[b.length]
     }
 
     /**

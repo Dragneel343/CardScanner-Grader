@@ -26,6 +26,7 @@
     <string name="card_select_looking_up">Looking it up…</string>
     <string name="card_select_searching">Searching…</string>
     <string name="card_select_confident">Found it — check it matches your card, then confirm.</string>
+    <string name="card_select_visual">Best match by artwork — check it matches your card, then confirm.</string>
     <plurals name="card_select_choose">
         <item quantity="one">1 possible match — tap it to compare.</item>
         <item quantity="other">%1$d possible printings — tap yours to compare.</item>

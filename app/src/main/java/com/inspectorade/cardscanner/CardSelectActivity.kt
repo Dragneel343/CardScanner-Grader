@@ -27,6 +27,9 @@ import com.inspectorade.cardscanner.grading.CardLayout
 import com.inspectorade.cardscanner.identify.CardIdentifier
 import com.inspectorade.cardscanner.identify.CardTextReader
 import com.inspectorade.cardscanner.identify.TcgdexClient
+import com.inspectorade.cardscanner.identify.VisualMatch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -48,6 +51,9 @@ class CardSelectActivity : AppCompatActivity() {
     private val thumbnails = mutableMapOf<String, Bitmap>()
     private val thumbViews = mutableMapOf<String, View>()
     private var officialJob: Job? = null
+    private var visualJob: Job? = null
+    private var displayedCard: Bitmap? = null
+    private var upsideDown = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,15 +111,50 @@ class CardSelectActivity : AppCompatActivity() {
             binding.yourCardProgress.visibility = View.GONE
             binding.yourCardImage.setImageBitmap(
                 Bitmap.createScaledBitmap(card, DISPLAY_WIDTH, DISPLAY_WIDTH * card.height / card.width, true)
+                    .also { displayedCard = it }
             )
             identify(card)
         }
     }
 
+    /**
+     * No number settled which printing this is: compare the user's card with each
+     * candidate's official image and select the one that clearly looks most
+     * like it. Reprints sharing artwork score alike, so then nothing is picked.
+     */
+    private suspend fun pickByLook(candidates: List<CardIdentifier.Match>) {
+        val card = displayedCard ?: return
+        val images = candidates.map { match ->
+            lifecycleScope.async {
+                val image = thumbnails[match.id]
+                    ?: match.imageBase?.let { runCatching { TcgdexClient.image(it) }.getOrNull() }
+                image?.let { match to it }
+            }
+        }.awaitAll().filterNotNull()
+        val scored = withContext(Dispatchers.Default) {
+            images.map { (match, image) -> match to VisualMatch.similarity(card, image) }
+        }.sortedByDescending { it.second }
+        Log.i(TAG, "Visual match: " + scored.take(4).joinToString { "%s %.2f".format(it.first.id, it.second) })
+        val best = scored.firstOrNull() ?: return
+        val runnerUp = scored.getOrNull(1)?.second ?: -1.0
+        if (best.second < MIN_VISUAL_SIMILARITY || best.second - runnerUp < MIN_VISUAL_LEAD) return
+        if (selected != null) return // the user already chose
+        select(best.first)
+        thumbViews[best.first.id]?.let { tile -> binding.candidateScroll.smoothScrollTo(tile.left, 0) }
+        binding.cardSelectStatus.setText(R.string.card_select_visual)
+    }
+
+    /** The card was photographed upside down: show it the right way up, and have centering turn it too. */
+    private fun showUpsideDown() {
+        upsideDown = true
+        displayedCard = displayedCard?.let { CardTextReader.rotate180(it) }?.also(binding.yourCardImage::setImageBitmap)
+    }
+
     private suspend fun identify(card: Bitmap) {
         binding.cardSelectStatus.setText(R.string.card_select_looking_up)
         val result = try {
-            val reading = CardTextReader.read(card)
+            val (reading, upsideDown) = CardTextReader.readEitherWayUp(card)
+            if (upsideDown) showUpsideDown()
             Log.i(TAG, "Card text: names=${reading.nameCandidates} numbers=${reading.numberCandidates}")
             CardIdentifier.identify(reading)
         } catch (exc: Exception) {
@@ -164,6 +205,8 @@ class CardSelectActivity : AppCompatActivity() {
         thumbViews.clear()
         binding.candidateRow.removeAllViews()
         select(if (preselect) found.firstOrNull() else null)
+        visualJob?.cancel()
+        if (!preselect && found.size > 1) visualJob = lifecycleScope.launch { pickByLook(found) }
 
         val density = resources.displayMetrics.density
         for (match in found) {
@@ -264,6 +307,7 @@ class CardSelectActivity : AppCompatActivity() {
             .putExtra(CenteringActivity.EXTRA_JPEG_URI, getIntent().getStringExtra(EXTRA_JPEG_URI))
             .putExtra(CenteringActivity.EXTRA_SIDE, getIntent().getStringExtra(EXTRA_SIDE))
             .putExtra(CenteringActivity.EXTRA_LAYOUT, layout.name)
+            .putExtra(CenteringActivity.EXTRA_UPSIDE_DOWN, upsideDown)
         if (match != null) {
             intent.putExtra(CenteringActivity.EXTRA_CARD_ID, match.id)
                 .putExtra(CenteringActivity.EXTRA_CARD_LABEL, match.label)
@@ -288,6 +332,11 @@ class CardSelectActivity : AppCompatActivity() {
         private const val THUMB_WIDTH_DP = 64
         private const val THUMB_HEIGHT_DP = 89
         private const val DISABLED_ALPHA = 0.4f
+
+        // A visual match must be this alike, and beat the next printing by this
+        // much, before it's selected for the user.
+        private const val MIN_VISUAL_SIMILARITY = 0.5
+        private const val MIN_VISUAL_LEAD = 0.1
         private const val EMPTY_THUMB_COLOR = 0xFF2A2A2A.toInt()
 
         const val EXTRA_JPEG_URI = "extra_jpeg_uri"

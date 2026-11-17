@@ -90,6 +90,62 @@ object ReferenceGuide {
         }
     }
 
+    // The turned-around comparison must beat the as-is one by this much
+    // (normalized correlation) before the card counts as upside down.
+    private const val ORIENTATION_MARGIN = 0.05
+
+    // Blur applied to the edge maps before comparing orientation, so a few
+    // pixels of misalignment or the scan's looser crop don't matter.
+    private const val ORIENTATION_BLUR = 15.0
+
+    /**
+     * Whether the flattened [card] is upside down compared with the official
+     * image of the card the user selected: its printed design correlates better
+     * with the scan turned 180°. Null if neither way matches convincingly.
+     */
+    fun isUpsideDown(card: Bitmap, margin: Int, reference: Bitmap): Boolean? {
+        val cardWidth = card.width - 2 * margin
+        val cardHeight = card.height - 2 * margin
+        val scaled = Bitmap.createScaledBitmap(reference, cardWidth, cardHeight, true)
+        val cardMat = Mat()
+        val refMat = Mat()
+        try {
+            Utils.bitmapToMat(card, cardMat)
+            Utils.bitmapToMat(scaled, refMat)
+            val photoEdges = cardMat.submat(Rect(margin, margin, cardWidth, cardHeight)).let { edgeMap(it).also { _ -> it.release() } }
+            val refEdges = edgeMap(refMat)
+            val turnedRef = Mat()
+            Core.flip(refEdges, turnedRef, -1)
+            listOf(photoEdges, refEdges, turnedRef).forEach {
+                Imgproc.GaussianBlur(it, it, Size(0.0, 0.0), ORIENTATION_BLUR * WORK_SCALE)
+            }
+            val asIs = correlation(photoEdges, refEdges)
+            val turned = correlation(photoEdges, turnedRef)
+            listOf(photoEdges, refEdges, turnedRef).forEach { it.release() }
+            Log.d(TAG, "Orientation vs scan: as-is %.3f, turned %.3f".format(asIs, turned))
+            return when {
+                turned > asIs + ORIENTATION_MARGIN -> true
+                asIs > turned + ORIENTATION_MARGIN -> false
+                else -> null
+            }
+        } finally {
+            cardMat.release()
+            refMat.release()
+            if (scaled !== reference) scaled.recycle()
+        }
+    }
+
+    /** Normalized correlation of two same-size single-channel float images. */
+    private fun correlation(a: Mat, b: Mat): Double {
+        val result = Mat()
+        try {
+            Imgproc.matchTemplate(a, b, result, Imgproc.TM_CCOEFF_NORMED)
+            return result.get(0, 0)[0]
+        } finally {
+            result.release()
+        }
+    }
+
     /**
      * How far the user's print sits from the scan's, across [line]'s side (x for
      * left/right, y for top/bottom), in card pixels; null if the strip along that

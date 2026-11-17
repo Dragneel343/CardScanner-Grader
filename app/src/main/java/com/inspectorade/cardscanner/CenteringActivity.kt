@@ -31,6 +31,7 @@ import com.inspectorade.cardscanner.grading.CenteringReading
 import com.inspectorade.cardscanner.grading.CenteringStandards
 import com.inspectorade.cardscanner.grading.LineStyle
 import com.inspectorade.cardscanner.grading.ReferenceGuide
+import com.inspectorade.cardscanner.identify.CardTextReader
 import com.inspectorade.cardscanner.identify.TcgdexClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -58,6 +59,7 @@ class CenteringActivity : AppCompatActivity() {
     private var detectedLines: BorderLines? = null
     private var currentBitmap: Bitmap? = null
     private var isFront = true
+    private var upsideDown = false
     private var layout = CardLayout.STANDARD
     private var cardLabel: String? = null
 
@@ -83,6 +85,7 @@ class CenteringActivity : AppCompatActivity() {
         }
 
         isFront = (intent.getStringExtra(EXTRA_SIDE) ?: CaptureActivity.SIDE_FRONT) == CaptureActivity.SIDE_FRONT
+        upsideDown = intent.getBooleanExtra(EXTRA_UPSIDE_DOWN, false)
         binding.centeringTitle.text = getString(
             if (isFront) R.string.centering_title_front else R.string.centering_title_back
         )
@@ -118,14 +121,16 @@ class CenteringActivity : AppCompatActivity() {
             val analysis = try {
                 val flattened = withContext(Dispatchers.Default) {
                     val photo = CardFlattener.loadUpright(contentResolver, jpegUri)
-                    try {
+                    val result = try {
                         CardFlattener.flatten(photo).also { if (isDebuggable()) saveDebugImages(photo, it) }
                     } finally {
                         photo.release()
                     }
+                    if (upsideDown) turnedAround(result) else result
                 }
                 reference = referenceImage?.await()
-                flattened to withContext(Dispatchers.Default) { detectLines(flattened.bitmap, initialLayout) }
+                val oriented = withContext(Dispatchers.Default) { orientedByReference(flattened) }
+                oriented to withContext(Dispatchers.Default) { detectLines(oriented.bitmap, initialLayout) }
             } catch (exc: Exception) {
                 Log.e(TAG, "Centering analysis failed", exc)
                 Toast.makeText(this@CenteringActivity, R.string.centering_failed, Toast.LENGTH_LONG).show()
@@ -152,6 +157,33 @@ class CenteringActivity : AppCompatActivity() {
             applyLayout(initialLayout)
             updateAutoColors(flattened.bitmap, lines)
         }
+    }
+
+    /**
+     * The card was photographed upside down (card selection read its text better
+     * turned around): turn the flattened card 180° so top, bottom, left and right
+     * are the card's own. The margin is the same on every side, so it stays put.
+     */
+    private fun turnedAround(result: CardFlattener.Result): CardFlattener.Result {
+        val turned = CardTextReader.rotate180(result.bitmap)
+        result.bitmap.recycle()
+        return CardFlattener.Result(
+            turned, result.cardFound, result.sourceCardHeight, result.cornersInPhoto,
+            result.roughCorners, result.sideMismatchDegrees,
+        )
+    }
+
+    /**
+     * The final say on orientation, when the selected card has an official image:
+     * if the flattened card matches the image better turned around, turn it. This
+     * corrects the text-based guess from card selection either way.
+     */
+    private fun orientedByReference(result: CardFlattener.Result): CardFlattener.Result {
+        val reference = reference ?: return result
+        if (!result.cardFound) return result
+        val upsideDown = runCatching { ReferenceGuide.isUpsideDown(result.bitmap, CardFlattener.MARGIN, reference) }
+            .onFailure { Log.w(TAG, "Orientation check failed", it) }.getOrNull()
+        return if (upsideDown == true) turnedAround(result) else result
     }
 
     private fun isDebuggable() = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -386,7 +418,7 @@ class CenteringActivity : AppCompatActivity() {
         val reading = binding.centeringView.currentLines()?.reading(layout) ?: return
         val psa = CenteringStandards.grade(reading.worstShare, isFront).first { it.grader == "PSA" }
         val summary = String.format(
-            Locale.US, "%s%s%s %.0f/%.0f · %s %.0f/%.0f · PSA %s",
+            Locale.US, "%s%s%s %.0f/%.0f · %s %.0f/%.0f%s · PSA %s",
             cardLabel?.let { "$it\n" } ?: "",
             when (layout) {
                 CardLayout.STANDARD -> ""
@@ -395,6 +427,8 @@ class CenteringActivity : AppCompatActivity() {
             },
             reading.firstLabel, reading.firstShare, 100 - reading.firstShare,
             reading.secondLabel, reading.secondShare, 100 - reading.secondShare,
+            // Shown but not graded (EX dot-code top/bottom), as on the centering screen.
+            if (reading.secondGraded) "" else "*",
             psa.grade,
         )
         setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary))
@@ -419,6 +453,7 @@ class CenteringActivity : AppCompatActivity() {
         const val EXTRA_SIDE = "extra_side"
         const val EXTRA_CENTERING_SUMMARY = "extra_centering_summary"
         const val EXTRA_LAYOUT = "extra_layout"
+        const val EXTRA_UPSIDE_DOWN = "extra_upside_down"
         const val EXTRA_CARD_ID = "extra_card_id"
         const val EXTRA_CARD_LABEL = "extra_card_label"
         const val EXTRA_CARD_IMAGE = "extra_card_image"

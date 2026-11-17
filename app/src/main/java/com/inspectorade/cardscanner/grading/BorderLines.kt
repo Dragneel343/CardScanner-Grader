@@ -64,6 +64,9 @@ class BorderLines(private val positions: FloatArray = FloatArray(BorderLine.entr
 
     fun copy(): BorderLines = BorderLines(positions.copyOf())
 
+    /** Positions in [BorderLine] order, for passing between screens; rebuild with the constructor. */
+    fun toArray(): FloatArray = positions.copyOf()
+
     private val leftWidth get() = this[BorderLine.INNER_LEFT] - this[BorderLine.OUTER_LEFT]
     private val rightWidth get() = this[BorderLine.OUTER_RIGHT] - this[BorderLine.INNER_RIGHT]
     private val topWidth get() = this[BorderLine.INNER_TOP] - this[BorderLine.OUTER_TOP]

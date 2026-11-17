@@ -14,6 +14,7 @@ import android.widget.GridLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.net.toUri
@@ -58,6 +59,10 @@ class CenteringActivity : AppCompatActivity() {
     private lateinit var binding: ActivityCenteringBinding
     private var detectedLines: BorderLines? = null
     private var currentBitmap: Bitmap? = null
+
+    // Whether the card's outline was found in the photo; corners and edges can't
+    // be judged without it.
+    private var cardFound = false
     private var isFront = true
     private var upsideDown = false
     private var layout = CardLayout.STANDARD
@@ -140,16 +145,17 @@ class CenteringActivity : AppCompatActivity() {
 
             val (flattened, lines) = analysis
             currentBitmap = flattened.bitmap
+            cardFound = flattened.cardFound
             detectedLines = lines
             binding.centeringProgress.visibility = View.GONE
             binding.centeringView.setContent(flattened.bitmap, lines.copy())
             binding.centeringDoneButton.isEnabled = true
             binding.layoutButton.isEnabled = true
             val sourceHeight = flattened.sourceCardHeight
-            Log.i(TAG, "Card sides off parallel %.2f°".format(flattened.sideMismatchDegrees))
+            Log.i(TAG, "Card outline error %.2f".format(flattened.outlineError))
             warning = when {
                 !flattened.cardFound -> getString(R.string.centering_card_not_found)
-                flattened.sideMismatchDegrees > MAX_SIDE_MISMATCH_DEGREES -> getString(R.string.centering_card_skewed)
+                flattened.outlineError > MAX_OUTLINE_ERROR -> getString(R.string.centering_card_skewed)
                 sourceHeight != null && sourceHeight < MIN_ACCURATE_CARD_HEIGHT_PX ->
                     getString(R.string.centering_card_too_small)
                 else -> null
@@ -169,7 +175,7 @@ class CenteringActivity : AppCompatActivity() {
         result.bitmap.recycle()
         return CardFlattener.Result(
             turned, result.cardFound, result.sourceCardHeight, result.cornersInPhoto,
-            result.roughCorners, result.sideMismatchDegrees,
+            result.roughCorners, result.outlineError,
         )
     }
 
@@ -431,9 +437,53 @@ class CenteringActivity : AppCompatActivity() {
             if (reading.secondGraded) "" else "*",
             psa.grade,
         )
-        setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary))
-        finish()
+        if (!cardFound) {
+            // The "card" is just the stretched photo: there are no real edges or
+            // corners to judge, and analyzing the background would invent wear.
+            setResult(
+                Activity.RESULT_OK,
+                Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary + "\n" + getString(R.string.wear_skipped)),
+            )
+            finish()
+            return
+        }
+        val bitmap = currentBitmap ?: return
+        val lines = binding.centeringView.currentLines() ?: return
+        binding.centeringDoneButton.isEnabled = false
+        lifecycleScope.launch {
+            // Corners & edges works on the same flattened card and the lines the
+            // user confirmed here; the image goes via a file (too big for an Intent).
+            val file = File(cacheDir, "card_${if (isFront) "front" else "back"}.png")
+            val saved = withContext(Dispatchers.IO) {
+                runCatching { file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+                    .onFailure { Log.e(TAG, "Couldn't save the card for corners & edges", it) }
+                    .isSuccess
+            }
+            binding.centeringDoneButton.isEnabled = true
+            if (!saved) {
+                setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary))
+                finish()
+                return@launch
+            }
+            cornersEdgesLauncher.launch(
+                Intent(this@CenteringActivity, CornersEdgesActivity::class.java)
+                    .putExtra(CornersEdgesActivity.EXTRA_CARD_PATH, file.absolutePath)
+                    .putExtra(CornersEdgesActivity.EXTRA_LINES, lines.toArray())
+                    .putExtra(CornersEdgesActivity.EXTRA_SIDE, intent.getStringExtra(EXTRA_SIDE))
+                    .putExtra(CornersEdgesActivity.EXTRA_CENTERING_SUMMARY, summary)
+            )
+        }
     }
+
+    // Back from corners & edges returns here to adjust the lines; Done there
+    // finishes this side with both summaries.
+    private val cornersEdgesLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+            val summary = result.data?.getStringExtra(CornersEdgesActivity.EXTRA_SUMMARY)
+            setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary))
+            finish()
+        }
 
     companion object {
         private const val TAG = "CenteringActivity"
@@ -442,10 +492,10 @@ class CenteringActivity : AppCompatActivity() {
         // pixel of edge error moves the ratio by a percent or more.
         private const val MIN_ACCURATE_CARD_HEIGHT_PX = 1200.0
 
-        // Opposite sides of the card's outline in the photo further from parallel
-        // than this means a corner was misplaced. A good outline is ~0.5°; the bad
-        // one that prompted this check was 4.6°.
-        private const val MAX_SIDE_MISMATCH_DEGREES = 1.5
+        // An outline further than this from a card's shape (see CardFlattener.outlineError)
+        // means a corner was misplaced. Good outlines measure ~0.5; the bad ones that
+        // prompted the check, 3.4 to 4.7.
+        private const val MAX_OUTLINE_ERROR = 1.5
 
         private const val DEBUG_PHOTO_MAX_DIM = 1600.0
 

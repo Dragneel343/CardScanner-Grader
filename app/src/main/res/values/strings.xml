@@ -57,6 +57,19 @@
     <string name="centering_failed">Couldn\'t analyze this photo for centering.</string>
     <string name="reset_lines_button">Reset</string>
     <string name="centering_done_button">Done</string>
+    <string name="wear_title_front">Corners &amp; Edges · Front</string>
+    <string name="wear_title_back">Corners &amp; Edges · Back</string>
+    <string name="wear_grades">Corners %1$s   Edges %2$s</string>
+    <string name="wear_not_assessable">can\'t judge (pale border)</string>
+    <plurals name="wear_chips">
+        <item quantity="one">%d chip</item>
+        <item quantity="other">%d chips</item>
+    </plurals>
+    <string name="wear_hint">Magenta = whitening (bare card stock), cyan = dents and chips. *Corner rounding (mm) is shown but not graded yet. ≈ = estimate, not yet calibrated against graded cards. Glare can look like whitening — retake if a highlight follows a reflection.</string>
+    <string name="wear_back_button">← Centering</string>
+    <string name="wear_skipped">Corners &amp; edges not assessed — the card\'s outline wasn\'t found</string>
+    <string name="wear_failed">Couldn\'t analyze the corners and edges.</string>
+    <string name="wear_card_description">Card with whitening and corner wear highlighted</string>
     <string name="retake_button">Retake</string>
     <string name="confirm_button">Confirm</string>
 </resources>

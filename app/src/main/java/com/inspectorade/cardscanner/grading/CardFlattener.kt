@@ -34,8 +34,8 @@ object CardFlattener {
     private const val REFINEMENT_PASSES = 2
 
     // Corner-placement noise; a refinement pass may make the outline this much
-    // less rectangular and still count as no worse.
-    private const val MISMATCH_TOLERANCE_DEGREES = 0.2
+    // further from a card's shape (see [outlineError]) and still count as no worse.
+    private const val OUTLINE_ERROR_TOLERANCE = 0.2
 
     private const val TAG = "CardFlattener"
 
@@ -56,8 +56,8 @@ object CardFlattener {
         val cornersInPhoto: Array<Point>?,
         /** The detector's corners before edge refinement, for debugging. */
         val roughCorners: Array<Point>? = null,
-        /** See [sideMismatchDegrees]; 0 if no card was found. */
-        val sideMismatchDegrees: Double = 0.0,
+        /** See [outlineError]; 0 if no card was found. */
+        val outlineError: Double = 0.0,
     )
 
     /**
@@ -135,9 +135,9 @@ object CardFlattener {
             ) ?: return result(flattened, corners, rough)
 
             val candidate = mapPoints(refined, from = canonicalCorners(), to = corners)
-            Log.d(TAG, "Refinement pass ${pass + 1}: sides off parallel %.2f° -> %.2f°"
-                .format(sideMismatchDegrees(corners), sideMismatchDegrees(candidate)))
-            if (sideMismatchDegrees(candidate) > sideMismatchDegrees(corners) + MISMATCH_TOLERANCE_DEGREES) {
+            Log.d(TAG, "Refinement pass ${pass + 1}: outline error %.2f -> %.2f"
+                .format(outlineError(corners), outlineError(candidate)))
+            if (outlineError(candidate) > outlineError(corners) + OUTLINE_ERROR_TOLERANCE) {
                 return result(flattened, corners, rough)
             }
             corners = candidate
@@ -148,18 +148,33 @@ object CardFlattener {
     }
 
     private fun result(flattened: Bitmap, corners: Array<Point>, rough: Array<Point>) =
-        Result(flattened, true, cardHeight(corners), corners, rough, sideMismatchDegrees(corners))
+        Result(flattened, true, cardHeight(corners), corners, rough, outlineError(corners))
 
     /**
-     * How far from parallel opposite sides of a TL, TR, BR, BL outline are, in
-     * degrees (the worse pair). A card photographed straight on — which the
-     * level indicator ensures — is within a fraction of a degree; more means a
-     * corner landed off the card, and the flattened card comes out skewed.
+     * How far a TL, TR, BR, BL outline is from the shape of a card seen straight
+     * on — which the level indicator ensures — taking the worst of:
+     * - opposite sides off parallel, in degrees;
+     * - corners off square, in degrees (a sheared outline has parallel sides but
+     *   leaning corners);
+     * - proportions off a card's 63 × 88 mm, in percent, counted half (so 2%
+     *   counts like 1°) — an outline that slid onto the inner border is the
+     *   wrong shape.
+     * A good outline is well under 1; more means a corner landed off the card,
+     * and the flattened card comes out skewed.
      */
-    fun sideMismatchDegrees(corners: Array<Point>): Double {
+    fun outlineError(corners: Array<Point>): Double {
         fun angle(from: Point, to: Point) = Math.toDegrees(atan2(to.y - from.y, to.x - from.x))
         val (tl, tr, br, bl) = corners
-        return max(abs(angle(tl, tr) - angle(bl, br)), abs(angle(tl, bl) - angle(tr, br)))
+        val parallel = max(abs(angle(tl, tr) - angle(bl, br)), abs(angle(tl, bl) - angle(tr, br)))
+        // Each side's direction against the next one's should differ by 90°.
+        val square = listOf(
+            angle(tl, tr) - angle(tl, bl), angle(tr, br) - angle(tr, tl),
+            angle(br, bl) - angle(br, tr), angle(bl, tl) - angle(bl, br),
+        ).maxOf { abs(abs(((it + 540) % 360) - 180) - 90) }
+        val width = (hypot(tr.x - tl.x, tr.y - tl.y) + hypot(br.x - bl.x, br.y - bl.y)) / 2
+        val aspect = width / cardHeight(corners)
+        val proportions = abs(aspect / (CARD_WIDTH.toDouble() / CARD_HEIGHT) - 1) * 100 / 2
+        return maxOf(parallel, square, proportions)
     }
 
     /** Average length of the left and right edges of a TL, TR, BR, BL quad. */
@@ -244,7 +259,9 @@ object CardFlattener {
         try {
             Imgproc.resize(rgba, small, Size(), scale, scale, Imgproc.INTER_AREA)
             Imgproc.cvtColor(small, gray, Imgproc.COLOR_RGBA2GRAY)
-            val found = CardDetector.detect(gray, STILL_MIN_AREA_FRACTION) ?: return null
+            val found = CardDetector.detect(gray, STILL_MIN_AREA_FRACTION)
+                ?: CardDetector.detectAgainstBackground(small, STILL_MIN_AREA_FRACTION)
+                ?: return null
             return orderPortrait(found.map { Point(it.x / scale, it.y / scale) })
         } finally {
             small.release()

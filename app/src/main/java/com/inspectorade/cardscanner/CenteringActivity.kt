@@ -17,6 +17,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.IntentCompat
 import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -32,6 +33,7 @@ import com.inspectorade.cardscanner.grading.CenteringReading
 import com.inspectorade.cardscanner.grading.CenteringStandards
 import com.inspectorade.cardscanner.grading.LineStyle
 import com.inspectorade.cardscanner.grading.ReferenceGuide
+import com.inspectorade.cardscanner.grading.SideResult
 import com.inspectorade.cardscanner.identify.CardTextReader
 import com.inspectorade.cardscanner.identify.TcgdexClient
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +65,8 @@ class CenteringActivity : AppCompatActivity() {
     // Whether the card's outline was found in the photo; corners and edges can't
     // be judged without it.
     private var cardFound = false
+    // The outline found was too far from a card's shape: the automatic lines are off.
+    private var outlineSkewed = false
     private var isFront = true
     private var upsideDown = false
     private var layout = CardLayout.STANDARD
@@ -146,6 +150,7 @@ class CenteringActivity : AppCompatActivity() {
             val (flattened, lines) = analysis
             currentBitmap = flattened.bitmap
             cardFound = flattened.cardFound
+            outlineSkewed = flattened.outlineError > MAX_OUTLINE_ERROR
             detectedLines = lines
             binding.centeringProgress.visibility = View.GONE
             binding.centeringView.setContent(flattened.bitmap, lines.copy())
@@ -425,9 +430,8 @@ class CenteringActivity : AppCompatActivity() {
     private fun finishWithSummary() {
         val reading = binding.centeringView.currentLines()?.reading(layout) ?: return
         val psa = CenteringStandards.grade(reading.worstShare, isFront).first { it.grader == "PSA" }
-        val summary = String.format(
-            Locale.US, "%s%s%s %.0f/%.0f · %s %.0f/%.0f%s · PSA %s",
-            cardLabel?.let { "$it\n" } ?: "",
+        val centeringText = String.format(
+            Locale.US, "%s%s %.0f/%.0f · %s %.0f/%.0f%s",
             when (layout) {
                 CardLayout.STANDARD -> ""
                 CardLayout.E_READER -> "e-Reader · "
@@ -437,14 +441,20 @@ class CenteringActivity : AppCompatActivity() {
             reading.secondLabel, reading.secondShare, 100 - reading.secondShare,
             // Shown but not graded (EX dot-code top/bottom), as on the centering screen.
             if (reading.secondGraded) "" else "*",
-            psa.grade,
         )
+        val summary = (cardLabel?.let { "$it\n" } ?: "") + "$centeringText · PSA ${psa.grade}"
+        // Lines left where detection put them on a photo whose card wasn't found
+        // (or came out skewed) measure the photo, not the card: not counted.
+        val adjusted = detectedLines?.toArray()?.contentEquals(binding.centeringView.currentLines()?.toArray()) == false
+        val counted = adjusted || (cardFound && !outlineSkewed)
+        val sideResult = SideResult(isFront, cardLabel, reading.worstShare, centeringText, centeringCounted = counted)
         if (!cardFound) {
             // The "card" is just the stretched photo: there are no real edges or
             // corners to judge, and analyzing the background would invent wear.
             setResult(
                 Activity.RESULT_OK,
-                Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary + "\n" + getString(R.string.wear_skipped)),
+                Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary + "\n" + getString(R.string.wear_skipped))
+                    .putExtra(EXTRA_SIDE_RESULT, sideResult),
             )
             finish()
             return
@@ -463,7 +473,10 @@ class CenteringActivity : AppCompatActivity() {
             }
             binding.centeringDoneButton.isEnabled = true
             if (!saved) {
-                setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary))
+                setResult(
+                    Activity.RESULT_OK,
+                    Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary).putExtra(EXTRA_SIDE_RESULT, sideResult),
+                )
                 finish()
                 return@launch
             }
@@ -473,17 +486,22 @@ class CenteringActivity : AppCompatActivity() {
                     .putExtra(CornersEdgesActivity.EXTRA_LINES, lines.toArray())
                     .putExtra(CornersEdgesActivity.EXTRA_SIDE, intent.getStringExtra(EXTRA_SIDE))
                     .putExtra(CornersEdgesActivity.EXTRA_CENTERING_SUMMARY, summary)
+                    .putExtra(CornersEdgesActivity.EXTRA_SIDE_RESULT, sideResult)
             )
         }
     }
 
     // Back from corners & edges returns here to adjust the lines; Done there
-    // finishes this side with both summaries.
+    // finishes this side with both summaries and the side's results.
     private val cornersEdgesLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
-            val summary = result.data?.getStringExtra(CornersEdgesActivity.EXTRA_SUMMARY)
-            setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_CENTERING_SUMMARY, summary))
+            val data = result.data
+            setResult(
+                Activity.RESULT_OK,
+                Intent().putExtra(EXTRA_CENTERING_SUMMARY, data?.getStringExtra(CornersEdgesActivity.EXTRA_SUMMARY))
+                    .putExtra(EXTRA_SIDE_RESULT, data?.let { IntentCompat.getSerializableExtra(it, CornersEdgesActivity.EXTRA_SIDE_RESULT, SideResult::class.java) }),
+            )
             finish()
         }
 
@@ -504,6 +522,8 @@ class CenteringActivity : AppCompatActivity() {
         const val EXTRA_JPEG_URI = "extra_jpeg_uri"
         const val EXTRA_SIDE = "extra_side"
         const val EXTRA_CENTERING_SUMMARY = "extra_centering_summary"
+        /** Result: the side's [SideResult], for the overall grade. */
+        const val EXTRA_SIDE_RESULT = "extra_side_result"
         const val EXTRA_LAYOUT = "extra_layout"
         const val EXTRA_UPSIDE_DOWN = "extra_upside_down"
         const val EXTRA_CARD_ID = "extra_card_id"

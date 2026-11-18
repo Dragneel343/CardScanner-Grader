@@ -81,6 +81,17 @@
     <string name="wear_skipped">Corners &amp; edges not assessed — the card\'s outline wasn\'t found</string>
     <string name="wear_failed">Couldn\'t analyze the corners and edges.</string>
     <string name="wear_card_description">Card with whitening and corner wear highlighted</string>
+    <string name="grade_summary_button">Overall Grade</string>
+    <string name="grade_summary_title">Overall Grade</string>
+    <string name="grade_summary_back">← Sides</string>
+    <string name="grade_summary_up_to">up to</string>
+    <string name="grade_summary_nothing">Nothing could be graded yet — retake the photos.</string>
+    <string name="grade_summary_not_counted">not counted</string>
+    <string name="grade_summary_centering_not_counted">The %1$s\'s centering wasn\'t counted: the card\'s edges weren\'t found (or came out skewed) and the lines were left as detected. Retake, or drag the lines into place.</string>
+    <string name="grade_summary_missing_side">The %1$s hasn\'t been graded yet.</string>
+    <string name="grade_summary_missing_wear">Corners and edges weren\'t assessed on the %1$s (the card\'s outline wasn\'t found).</string>
+    <string name="grade_summary_missing_surface">Surface isn\'t graded yet, so these are upper bounds: surface wear can only bring the grade down.</string>
+    <string name="grade_summary_how">The overall grade is capped by the weakest category on either side; the category after each grade is what holds it there. ≈ = estimate, not yet calibrated against graded cards.</string>
     <string name="retake_button">Retake</string>
     <string name="confirm_button">Confirm</string>
 </resources>

@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.IntentCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
@@ -21,6 +22,7 @@ import com.inspectorade.cardscanner.databinding.ActivityCornersEdgesBinding
 import com.inspectorade.cardscanner.grading.BorderLine
 import com.inspectorade.cardscanner.grading.BorderLines
 import com.inspectorade.cardscanner.grading.CornerEdgeAnalyzer
+import com.inspectorade.cardscanner.grading.SideResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -31,7 +33,8 @@ import kotlin.math.roundToInt
  * Corners & Edges, after centering for each side: finds whitening along the
  * edges and wear at the corners of the flattened card (see
  * [CornerEdgeAnalyzer]), highlights it on the card and in corner close-ups, and
- * gives estimated grades. Done returns the centering summary with these added.
+ * gives estimated grades. Done returns the centering summary and the side's
+ * [SideResult] with these added.
  */
 class CornersEdgesActivity : AppCompatActivity() {
 
@@ -170,7 +173,9 @@ class CornersEdgesActivity : AppCompatActivity() {
         fun grade(value: Int?) = value?.let { if (it <= 5) "≈≤5" else "≈$it" } ?: "n/a"
         val summary = (intent.getStringExtra(EXTRA_CENTERING_SUMMARY) ?: "") +
             "\nCorners ${grade(analysis.cornerGrade)} · Edges ${grade(analysis.edgeGrade)}"
-        setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SUMMARY, summary))
+        val sideResult = IntentCompat.getSerializableExtra(intent, EXTRA_SIDE_RESULT, SideResult::class.java)
+            ?.copy(cornerGrade = analysis.cornerGrade, edgeGrade = analysis.edgeGrade)
+        setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SUMMARY, summary).putExtra(EXTRA_SIDE_RESULT, sideResult))
         finish()
     }
 
@@ -193,5 +198,7 @@ class CornersEdgesActivity : AppCompatActivity() {
         const val EXTRA_SIDE = "extra_side"
         const val EXTRA_CENTERING_SUMMARY = "extra_centering_summary"
         const val EXTRA_SUMMARY = "extra_summary"
+        /** In: the side's [SideResult] from centering. Out: with corner and edge grades added. */
+        const val EXTRA_SIDE_RESULT = "extra_side_result"
     }
 }

@@ -83,6 +83,18 @@
             android:textColor="@color/white"
             android:backgroundTint="@color/accent" />
 
+        <!-- Shown once a side has been graded. -->
+        <Button
+            android:id="@+id/gradeSummaryButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="40dp"
+            android:paddingVertical="16dp"
+            android:text="@string/grade_summary_button"
+            android:textColor="@color/black"
+            android:backgroundTint="@color/white"
+            android:visibility="gone" />
+
     </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

@@ -245,8 +245,8 @@ object CardDetector {
                     }
                 }
                 if (points.size != 4 || points.any(::touchesBorder)) {
-                    if (explain) Log.d(TAG, "Rejected: area %.0f%%, %d corners, touches border %b"
-                        .format(area * 100 / frameArea, points.size, points.any(::touchesBorder)))
+                    if (explain) Log.d(TAG, "Rejected: area %.0f%%, %d corners, touches border %b, fills %.2f of its rectangle"
+                        .format(area * 100 / frameArea, points.size, points.any(::touchesBorder), rectangleFill(contour, area)))
                     continue
                 }
 
@@ -286,13 +286,21 @@ object CardDetector {
      * perspective-skewed quad is close enough.
      */
     private fun rectangleFilledBy(contour: MatOfPoint, area: Double): Array<Point>? {
-        val contour2f = MatOfPoint2f(*contour.toArray())
-        val box = Imgproc.minAreaRect(contour2f)
-        contour2f.release()
-        val boxArea = box.size.width * box.size.height
-        if (boxArea <= 0 || area / boxArea < MIN_RECTANGLE_FILL) return null
+        if (rectangleFill(contour, area) < MIN_RECTANGLE_FILL) return null
         val corners = arrayOfNulls<Point>(4)
-        box.points(corners)
+        minAreaRect(contour).points(corners)
         return corners.requireNoNulls()
+    }
+
+    /** The share of its smallest enclosing rectangle that an outline of [area] covers. */
+    private fun rectangleFill(contour: MatOfPoint, area: Double): Double {
+        val size = minAreaRect(contour).size
+        val boxArea = size.width * size.height
+        return if (boxArea > 0) area / boxArea else 0.0
+    }
+
+    private fun minAreaRect(contour: MatOfPoint): org.opencv.core.RotatedRect {
+        val contour2f = MatOfPoint2f(*contour.toArray())
+        return Imgproc.minAreaRect(contour2f).also { contour2f.release() }
     }
 }

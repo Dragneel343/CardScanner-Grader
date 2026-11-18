@@ -49,8 +49,57 @@ object BorderDetector {
     private const val SNAP_BACK = 6
     private const val RESUME_SUSTAIN = 4
 
+    // The printed frame on a card back, as a share of the card's width and height,
+    // measured on a near-mint WOTC-era back (Espeon, Neo Discovery) across five
+    // photos that agreed to the pixel. Allowed to vary this much (of the card's
+    // size) for print and measurement slack.
+    private const val BACK_FRAME_WIDTH = 0.898
+    private const val BACK_FRAME_HEIGHT = 0.918
+    private const val BACK_FRAME_TOLERANCE = 0.005
+
     fun detect(card: Bitmap, margin: Int, layout: CardLayout = CardLayout.STANDARD): BorderLines =
         detect(card, margin, layout, outerKnown = false)
+
+    /**
+     * Lines for a card's back. Every Pokémon card back is printed with the same
+     * frame, so the frame's size is known and only its position (the centering)
+     * varies: each axis's two inner lines are found together, as the pair of
+     * color steps exactly the frame's size apart with the most contrast between
+     * them. One worn or faded border can't pull its line off on its own then —
+     * the first-departure search of [detect] stops early where a border's color
+     * drifts (darkening toward the frame, fading toward a worn edge), and a
+     * back's border and swirl are too alike in color to set a firm threshold.
+     */
+    fun detectBack(card: Bitmap, margin: Int): BorderLines {
+        val lines = detect(card, margin)
+        val profiles = Profiles(card, margin)
+        fun pair(strength: FloatArray, outerStart: Float, outerEnd: Float, frameFraction: Double): Pair<Int, Int> {
+            val cardSize = outerEnd - outerStart
+            val nominal = cardSize * frameFraction
+            val tolerance = (cardSize * BACK_FRAME_TOLERANCE).toInt()
+            val from = (outerStart + cardSize * INNER_MIN_FRACTION).toInt()
+            val to = (outerStart + cardSize * INNER_MAX_FRACTION).toInt()
+            var best = from to (from + nominal).toInt()
+            var bestScore = Float.NEGATIVE_INFINITY
+            for (start in from..to) for (d in -tolerance..tolerance) {
+                val end = (start + nominal).toInt() + d
+                if (end >= outerEnd - cardSize * INNER_MIN_FRACTION || end !in strength.indices) continue
+                val score = strength[start] + strength[end]
+                if (score > bestScore) {
+                    bestScore = score
+                    best = start to end
+                }
+            }
+            return best
+        }
+        val (left, right) = pair(stepStrength(profiles.columns), lines[BorderLine.OUTER_LEFT], lines[BorderLine.OUTER_RIGHT], BACK_FRAME_WIDTH)
+        val (top, bottom) = pair(stepStrength(profiles.rows), lines[BorderLine.OUTER_TOP], lines[BorderLine.OUTER_BOTTOM], BACK_FRAME_HEIGHT)
+        lines[BorderLine.INNER_LEFT] = left.toFloat()
+        lines[BorderLine.INNER_RIGHT] = right.toFloat()
+        lines[BorderLine.INNER_TOP] = top.toFloat()
+        lines[BorderLine.INNER_BOTTOM] = bottom.toFloat()
+        return lines
+    }
 
     /**
      * Inner lines of an image that is exactly the card, edge to edge — an

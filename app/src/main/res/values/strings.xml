@@ -24,6 +24,7 @@
     <string name="review_title_back">Back of Card</string>
     <string name="centering_title_front">Centering · Front</string>
     <string name="centering_title_back">Centering · Back</string>
+    <string name="centering_grades">Centering only: %1$s</string>
     <string name="centering_hint">Drag a line to fine-tune it. Solid = card edge, dashed = printed border. ≈ = grader standard not yet verified.</string>
     <string name="layout_standard">Layout: Standard ⇄</string>
     <string name="layout_e_reader">Layout: e-Card (e-Reader) ⇄</string>

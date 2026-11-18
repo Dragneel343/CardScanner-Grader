@@ -28,7 +28,10 @@ object CardFlattener {
 
     const val CARD_WIDTH = 1000
     const val CARD_HEIGHT = 1400
-    const val MARGIN = 60
+    // A clear band of surface around the card (10% of its width): enough to see
+    // the cut on every side, and room for edge refinement to search outward when
+    // the rough outline landed inside the card.
+    const val MARGIN = 100
 
     private const val DETECTION_MAX_DIM = 800.0
     private const val REFINEMENT_PASSES = 2
@@ -36,6 +39,10 @@ object CardFlattener {
     // Corner-placement noise; a refinement pass may make the outline this much
     // further from a card's shape (see [outlineError]) and still count as no worse.
     private const val OUTLINE_ERROR_TOLERANCE = 0.2
+    // A refined outline this close to a card's shape is kept even if the rough one
+    // scored better: a rough outline on a dark back's inner frame is a fine
+    // rectangle, just the wrong one, and the real cut can sit at a slight angle.
+    private const val GOOD_OUTLINE_ERROR = 1.2
 
     private const val TAG = "CardFlattener"
 
@@ -122,9 +129,9 @@ object CardFlattener {
         // warp samples the original photo, so the result is interpolated once.
         //
         // A pass is kept only if it leaves the outline at least as rectangular as
-        // before: on a worn card, the refiner can lock onto the wrong edge on part
-        // of a side (whitened edge wear, the inner border, a shadow) and tilt an
-        // edge the detector had right.
+        // before, or close to a card's shape anyway: on a worn card, the refiner
+        // can lock onto the wrong edge on part of a side (whitened edge wear, the
+        // inner border, a shadow) and tilt an edge the detector had right.
         var corners = rough
         var flattened = warp(rgba, corners, canonicalCorners())
         repeat(REFINEMENT_PASSES) { pass ->
@@ -137,7 +144,8 @@ object CardFlattener {
             val candidate = mapPoints(refined, from = canonicalCorners(), to = corners)
             Log.d(TAG, "Refinement pass ${pass + 1}: outline error %.2f -> %.2f"
                 .format(outlineError(corners), outlineError(candidate)))
-            if (outlineError(candidate) > outlineError(corners) + OUTLINE_ERROR_TOLERANCE) {
+            val error = outlineError(candidate)
+            if (error > outlineError(corners) + OUTLINE_ERROR_TOLERANCE && error > GOOD_OUTLINE_ERROR) {
                 return result(flattened, corners, rough)
             }
             corners = candidate

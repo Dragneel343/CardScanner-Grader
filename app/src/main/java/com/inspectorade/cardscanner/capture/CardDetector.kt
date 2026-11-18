@@ -40,6 +40,10 @@ object CardDetector {
     private const val SURFACE_PERCENTILE = 0.9
     private const val SURFACE_SPREAD_FACTOR = 2.5
     private const val MIN_COLOR_DISTANCE = 25.0
+    // A card fills ~99% of its bounding rectangle (only the rounded corners miss),
+    // but on a color mask a dark border close to a dark surface drops out in
+    // places: a deep blue back on black cloth measured 0.82.
+    private const val MIN_RECTANGLE_FILL = 0.75
 
     /**
      * Looks for a quadrilateral matching a card's aspect ratio in a single-channel
@@ -231,8 +235,15 @@ object CardDetector {
                 Imgproc.approxPolyDP(contour2f, approx, 0.02 * perimeter, true)
                 contour2f.release()
 
-                val points = approx.toArray()
+                var points = approx.toArray()
                 approx.release()
+                if (points.size != 4) {
+                    rectangleFilledBy(contour, area)?.let {
+                        if (explain) Log.d(TAG, "Solid rectangle used: %d corners, area %.0f%%"
+                            .format(points.size, area * 100 / frameArea))
+                        points = it
+                    }
+                }
                 if (points.size != 4 || points.any(::touchesBorder)) {
                     if (explain) Log.d(TAG, "Rejected: area %.0f%%, %d corners, touches border %b"
                         .format(area * 100 / frameArea, points.size, points.any(::touchesBorder)))
@@ -263,5 +274,25 @@ object CardDetector {
             hierarchy.release()
             contours.forEach { it.release() }
         }
+    }
+
+    /**
+     * The corners of the smallest rectangle around an outline that didn't simplify
+     * to four corners (a dent from a shadow or a worn corner adds a few), if the
+     * outline fills most of it — as a card does, rounded corners and all.
+     * A blob that only partly covers the card (half the border, a patch of
+     * swirl) fills its rectangle poorly and is left rejected. Edge refinement
+     * later fits the true edges, so a rectangle in place of a slightly
+     * perspective-skewed quad is close enough.
+     */
+    private fun rectangleFilledBy(contour: MatOfPoint, area: Double): Array<Point>? {
+        val contour2f = MatOfPoint2f(*contour.toArray())
+        val box = Imgproc.minAreaRect(contour2f)
+        contour2f.release()
+        val boxArea = box.size.width * box.size.height
+        if (boxArea <= 0 || area / boxArea < MIN_RECTANGLE_FILL) return null
+        val corners = arrayOfNulls<Point>(4)
+        box.points(corners)
+        return corners.requireNoNulls()
     }
 }

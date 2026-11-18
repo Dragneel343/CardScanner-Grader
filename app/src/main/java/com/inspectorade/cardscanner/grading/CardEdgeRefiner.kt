@@ -24,13 +24,19 @@ import kotlin.math.roundToInt
 object CardEdgeRefiner {
 
     private const val SAMPLES_PER_SIDE = 40
-    private const val SEARCH_FRACTION = 0.07
-    private const val MAX_CORNER_SHIFT_FRACTION = 0.10
+    // As far as the flattening margin allows: a rough outline can land on a dark
+    // card back's inner frame, a whole border width (~5–7%) inside the cut.
+    private const val SEARCH_FRACTION = 0.10
+    private const val MAX_CORNER_SHIFT_FRACTION = 0.15
+    // Samples this close (px) to a candidate line count as on it.
+    private const val INLIER_DISTANCE = 2.0
     private const val STEP_HALF_WIDTH = 5
     private const val ALONG_HALF_SPAN = 7
     private const val POLARITY_NEAR = 10
     private const val POLARITY_FAR = 40
     private const val MIN_POLARITY_CONTRAST = 15f
+    // An edge at least this share of the strongest in the window counts as the cut.
+    private const val OUTERMOST_EDGE_FRACTION = 0.3f
 
     /** A line expressed as `across = slope * along + intercept`. */
     private class Line(val slope: Double, val intercept: Double)
@@ -57,12 +63,15 @@ object CardEdgeRefiner {
         val top = Side(vertical = false, expected = margin, inward = 1)
         val bottom = Side(vertical = false, expected = margin + cardHeight, inward = -1)
         val sides = listOf(left, right, top, bottom)
-        val polarities = sides.map { polarity(image, it, alongFrom = margin, alongLength = if (it.vertical) cardHeight else cardWidth) }
+        fun window(side: Side) = ((if (side.vertical) cardWidth else cardHeight) * SEARCH_FRACTION).toInt()
+        val polarities = sides.map {
+            polarity(image, it, window(it), alongFrom = margin, alongLength = if (it.vertical) cardHeight else cardWidth)
+        }
 
         val lines = sides.mapIndexed { i, side ->
             fitEdge(
                 image, side, polarities[i],
-                window = ((if (side.vertical) cardWidth else cardHeight) * SEARCH_FRACTION).toInt(),
+                window = window(side),
                 alongFrom = margin, alongLength = if (side.vertical) cardHeight else cardWidth,
             ) ?: return null
         }
@@ -92,16 +101,20 @@ object CardEdgeRefiner {
     /**
      * +1 if the card is brighter than its surroundings on this side, -1 if
      * darker, 0 if too close to call (then edges of either direction count).
+     * The surroundings are sampled at the far end of the search [window], not
+     * just outside the current line: that line can lie inside the card (on a
+     * card back's inner frame), and then just outside it is still card.
      */
-    private fun polarity(image: Image, side: Side, alongFrom: Int, alongLength: Int): Int {
+    private fun polarity(image: Image, side: Side, window: Int, alongFrom: Int, alongLength: Int): Int {
         var inside = 0f
         var outside = 0f
         var count = 0
+        val span = POLARITY_FAR - POLARITY_NEAR
         for (i in 0 until SAMPLES_PER_SIDE) {
             val along = alongFrom + (alongLength * (0.15 + 0.7 * i / (SAMPLES_PER_SIDE - 1))).toInt()
             for (d in POLARITY_NEAR..POLARITY_FAR) {
                 inside += sample(image, side.vertical, along, side.expected + side.inward * d)
-                outside += sample(image, side.vertical, along, side.expected - side.inward * d)
+                outside += sample(image, side.vertical, along, side.expected - side.inward * (window - span + d - POLARITY_NEAR))
                 count++
             }
         }
@@ -128,29 +141,49 @@ object CardEdgeRefiner {
             across[i] = bestEdge(image, side, polarity, a, side.expected - window, side.expected + window).toDouble()
         }
 
-        var keep = BooleanArray(SAMPLES_PER_SIDE) { true }
-        var line = leastSquares(along, across, keep) ?: return null
-        val residuals = DoubleArray(SAMPLES_PER_SIDE) { abs(across[it] - (line.slope * along[it] + line.intercept)) }
-        val median = residuals.sorted()[SAMPLES_PER_SIDE / 2]
-        val limit = maxOf(2.0, 2.5 * median)
-        keep = BooleanArray(SAMPLES_PER_SIDE) { residuals[it] <= limit }
-        if (keep.count { it } < SAMPLES_PER_SIDE / 2) return null
-        line = leastSquares(along, across, keep) ?: return null
-        return line
-    }
-
-    /** Across-axis position in [from, to] with the strongest card edge of the right polarity. */
-    private fun bestEdge(image: Image, side: Side, polarity: Int, along: Int, from: Int, to: Int): Int {
-        var best = side.expected
-        var bestScore = Float.NEGATIVE_INFINITY
-        for (pos in from..to) {
-            val score = edgeScore(image, side.vertical, side.inward, polarity, along, pos)
-            if (score > bestScore) {
-                bestScore = score
-                best = pos
+        // The line most samples agree on, from every pair of samples: some samples
+        // can land on a printed edge instead of the cut (where the cut is faint, as
+        // along a dark border in shadow), and a fit over all of them is pulled off
+        // by those before they can be told apart.
+        var bestKeep: BooleanArray? = null
+        var bestCount = 0
+        for (i in 0 until SAMPLES_PER_SIDE) for (j in i + 1 until SAMPLES_PER_SIDE) {
+            val slope = (across[j] - across[i]) / (along[j] - along[i])
+            val intercept = across[i] - slope * along[i]
+            val keep = BooleanArray(SAMPLES_PER_SIDE) { abs(across[it] - (slope * along[it] + intercept)) <= INLIER_DISTANCE }
+            val count = keep.count { it }
+            if (count > bestCount) {
+                bestCount = count
+                bestKeep = keep
             }
         }
-        return best
+        if (bestCount < SAMPLES_PER_SIDE / 2) return null
+        return leastSquares(along, across, bestKeep!!)
+    }
+
+    /**
+     * Across-axis position in [from, to] of the card's edge: the outermost strong
+     * edge of the right polarity, not simply the strongest. Walking in from the
+     * surface, the cut is the first place it turns into card; anything printed
+     * lies further in, and can be the stronger step — a card back's dark blue
+     * border against black cloth is a weaker edge than the bright swirl just
+     * inside that border.
+     */
+    private fun bestEdge(image: Image, side: Side, polarity: Int, along: Int, from: Int, to: Int): Int {
+        val scores = FloatArray(to - from + 1) { edgeScore(image, side.vertical, side.inward, polarity, along, from + it) }
+        val strongest = scores.maxOrNull() ?: return side.expected
+        if (strongest <= 0f) return side.expected
+        val threshold = strongest * OUTERMOST_EDGE_FRACTION
+        // Outside to inside: increasing positions for left/top, decreasing for right/bottom.
+        val order = if (side.inward > 0) scores.indices else scores.indices.reversed()
+        var i = order.firstOrNull { scores[it] >= threshold } ?: return side.expected
+        // Climb to the peak of that edge.
+        while (true) {
+            val next = i + side.inward
+            if (next !in scores.indices || scores[next] < scores[i]) break
+            i = next
+        }
+        return from + i
     }
 
     /**
@@ -205,8 +238,14 @@ object CardEdgeRefiner {
     private fun sample(image: Image, vertical: Boolean, along: Int, across: Int): Float =
         if (vertical) image.at(across, along) else image.at(along, across)
 
+    /**
+     * The pixel's strongest channel (HSV value) rather than perceived brightness:
+     * a deep blue card back is barely brighter than black cloth to the eye
+     * (blue counts little toward luma), but its blue channel stands far above the
+     * cloth's — while the step from that border to the pale swirl inside shrinks.
+     */
     private fun luminance(pixel: Int): Float =
-        0.299f * ((pixel shr 16) and 0xFF) + 0.587f * ((pixel shr 8) and 0xFF) + 0.114f * (pixel and 0xFF)
+        maxOf((pixel shr 16) and 0xFF, (pixel shr 8) and 0xFF, pixel and 0xFF).toFloat()
 
     private fun leastSquares(x: DoubleArray, y: DoubleArray, keep: BooleanArray): Line? {
         var n = 0

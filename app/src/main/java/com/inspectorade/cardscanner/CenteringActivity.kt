@@ -228,6 +228,7 @@ class CenteringActivity : AppCompatActivity() {
 
     /** Border lines from the photo alone, refined by the official image when there is one. */
     private fun detectLines(bitmap: Bitmap, layout: CardLayout): BorderLines {
+        if (!isFront) return BorderDetector.detectBack(bitmap, CardFlattener.MARGIN)
         val detected = BorderDetector.detect(bitmap, CardFlattener.MARGIN, layout)
         val reference = reference ?: return detected
         val guided = runCatching {
@@ -415,10 +416,11 @@ class CenteringActivity : AppCompatActivity() {
         return grid
     }
 
+    /** Labelled as centering only, so it isn't read as the card's grade. */
     private fun gradeSummary(reading: CenteringReading): String =
-        CenteringStandards.grade(reading.worstShare, isFront).joinToString("   ") {
+        getString(R.string.centering_grades, CenteringStandards.grade(reading.worstShare, isFront).joinToString("   ") {
             "${it.grader} ${if (it.verified) "" else "≈"}${it.grade}"
-        }
+        })
 
     private fun finishWithSummary() {
         val reading = binding.centeringView.currentLines()?.reading(layout) ?: return

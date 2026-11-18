@@ -4,6 +4,16 @@
     <string name="capture_button">Capture</string>
     <string name="camera_permission_rationale">Camera access is required to scan cards.</string>
     <string name="auto_capture_toggle">Auto-capture</string>
+    <string name="torch_off">💡 Light</string>
+    <string name="torch_on">💡 On</string>
+    <string name="quality_all_good">Light ✓ · Sharp ✓ · Steady ✓</string>
+    <string name="quality_no_card">Light %1$s · Sharp – (no card found) · Steady %2$s</string>
+    <string name="quality_checks">Light %1$s · Sharp %2$s · Steady %3$s</string>
+    <string name="quality_dark">⚠ Too dark — add light, or tap 💡 Light</string>
+    <string name="quality_dark_no_torch">⚠ Too dark — add more light</string>
+    <string name="quality_blurry">⚠ Card isn\'t sharp — tap the card to refocus</string>
+    <string name="quality_moving">⚠ Hold the phone still</string>
+    <string name="quality_torch_glare">Flashlight on: watch for glare on holo and shiny cards</string>
     <string name="grade_a_card_button">Grade a Card</string>
     <string name="back_button">← Home</string>
     <string name="select_side_title">Select a Side</string>

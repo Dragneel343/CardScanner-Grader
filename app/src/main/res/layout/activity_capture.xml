@@ -50,6 +50,39 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- Light / sharpness / steadiness checks (CaptureQuality), with the fix for
+         whichever fails first. Just above the controls, clear of the card. -->
+    <TextView
+        android:id="@+id/qualityText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        android:padding="6dp"
+        android:background="#80000000"
+        android:gravity="center"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/captureButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Flashlight for dim rooms; left of Capture, mirroring Auto-capture on the right. -->
+    <ToggleButton
+        android:id="@+id/torchButton"
+        style="?attr/borderlessButtonStyle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textOff="@string/torch_off"
+        android:textOn="@string/torch_on"
+        android:textAllCaps="false"
+        android:textColor="@color/white"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="@id/captureButton"
+        app:layout_constraintBottom_toBottomOf="@id/captureButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toStartOf="@id/captureButton" />
+
     <!-- Beside the capture button, in the bar below the preview, so it never
          covers the card. -->
     <androidx.appcompat.widget.SwitchCompat

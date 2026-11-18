@@ -16,10 +16,12 @@ import android.hardware.camera2.TotalCaptureResult
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,6 +48,7 @@ import androidx.core.view.doOnLayout
 import androidx.core.view.marginBottom
 import androidx.core.view.marginTop
 import androidx.core.view.updateLayoutParams
+import com.inspectorade.cardscanner.capture.CaptureQuality
 import com.inspectorade.cardscanner.capture.CardDetector
 import com.inspectorade.cardscanner.databinding.ActivityCaptureBinding
 import org.opencv.android.OpenCVLoader
@@ -81,6 +84,12 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
     private var tiltYDegrees = 0f
     private var overallTiltDegrees = 0f
     private var isLevel = false
+
+    // Light, sharpness and steadiness checks (see CaptureQuality).
+    private val quality = CaptureQuality()
+    private var gyroSensor: Sensor? = null
+    private var torchOn = false
+    private var lastQualityLogMs = 0L
 
     private val handler = Handler(Looper.getMainLooper())
     private var autoCaptureEnabled = false
@@ -135,6 +144,8 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         levelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
             ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        binding.torchButton.setOnCheckedChangeListener { _, checked -> setTorch(checked) }
 
         // Edge-to-edge is enforced on modern Android, so the preview draws full-bleed
         // behind the system bars; push the controls in from under the gesture bar
@@ -174,6 +185,7 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
     override fun onResume() {
         super.onResume()
         levelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        gyroSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
     }
 
     override fun onPause() {
@@ -194,6 +206,14 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
      * leaks into the device's X/Y axes rather than being purely along Z.
      */
     override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
+            quality.updateRotation(
+                CaptureQuality.rotationSpeed(event.values[0], event.values[1], event.values[2]),
+                SystemClock.elapsedRealtime(),
+            )
+            refreshQualityText()
+            return
+        }
         val gx = event.values[0]
         val gy = event.values[1]
         val gz = event.values[2]
@@ -239,6 +259,10 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
                         result: TotalCaptureResult
                     ) {
                         result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+                        quality.updateExposure(
+                            result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                            result.get(CaptureResult.SENSOR_SENSITIVITY),
+                        )
                     }
                 }
             )
@@ -309,6 +333,8 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
                 }
 
                 camera = cameraProvider.bindToLifecycle(this, cameraSelector, useCaseGroupBuilder.build())
+                binding.torchButton.visibility =
+                    if (camera?.cameraInfo?.hasFlashUnit() == true) View.VISIBLE else View.GONE
                 meteringStatusText = "Tap card to focus & lock"
                 refreshStatusText()
             } catch (exc: Exception) {
@@ -325,18 +351,73 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
         binding.statusText.text = "$sideLabel · $rawStatus · $tiltStatus · $meteringStatusText"
     }
 
+    /**
+     * The light / sharpness / steadiness line: each check's ✓ or ⚠, then the fix
+     * for the most important problem. Warns rather than blocks — manual capture
+     * still works; auto-capture waits for a sharp, steady view (see
+     * maybeHandleAutoCapture).
+     */
+    private fun refreshQualityText() {
+        val now = SystemClock.elapsedRealtime()
+        val issues = quality.issues(now)
+        fun mark(ok: Boolean) = if (ok) "✓" else "⚠"
+        val light = mark(CaptureQuality.Issue.DARK !in issues)
+        val steady = mark(CaptureQuality.Issue.MOVING !in issues)
+        val checks = when {
+            !quality.hasSharpnessReading(now) -> getString(R.string.quality_no_card, light, steady)
+            issues.isEmpty() -> getString(R.string.quality_all_good)
+            else -> getString(R.string.quality_checks, light, mark(CaptureQuality.Issue.BLURRY !in issues), steady)
+        }
+        val advice = when (issues.firstOrNull()) {
+            CaptureQuality.Issue.DARK ->
+                if (camera?.cameraInfo?.hasFlashUnit() == true && !torchOn) getString(R.string.quality_dark)
+                else getString(R.string.quality_dark_no_torch)
+            CaptureQuality.Issue.BLURRY -> getString(R.string.quality_blurry)
+            CaptureQuality.Issue.MOVING -> getString(R.string.quality_moving)
+            null -> if (torchOn) getString(R.string.quality_torch_glare) else null
+        }
+        binding.qualityText.text = listOfNotNull(checks, advice).joinToString("\n")
+        binding.qualityText.visibility = View.VISIBLE
+
+        if (now - lastQualityLogMs > QUALITY_LOG_INTERVAL_MS) {
+            lastQualityLogMs = now
+            Log.d(TAG, "Quality: exposureEffort=%s edgeWidth=%s steady=%b torch=%b issues=%s".format(
+                quality.exposureEffort?.let { "%.3f".format(it) }, quality.currentEdgeWidth?.let { "%.2f".format(it) },
+                quality.isSteady, torchOn, issues,
+            ))
+        }
+    }
+
+    /**
+     * The flashlight helps in a dim room but puts a reflection on holos and shiny
+     * cards, so it's the user's choice. Light changes what focus and exposure
+     * should be, so any lock is released to be redone under the new light.
+     */
+    private fun setTorch(on: Boolean) {
+        val cam = camera ?: return
+        torchOn = on
+        cam.cameraControl.enableTorch(on)
+        if (is3ALocked) unlock3A(cam)
+        refreshQualityText()
+    }
+
     /** Runs on cameraExecutor (background thread) — must always close imageProxy. */
     private fun analyzeFrameForCardOutline(imageProxy: ImageProxy) {
         try {
             val gray = yPlaneToMat(imageProxy)
-            val corners = try {
-                CardDetector.detect(gray)
+            val (corners, edgeWidth) = try {
+                val found = CardDetector.detect(gray)
+                found to found?.let { CaptureQuality.edgeWidth(gray, it) }
             } finally {
                 gray.release()
             }
+            quality.updateEdgeWidth(edgeWidth, SystemClock.elapsedRealtime())
 
             val quad = corners?.let { mapToViewQuad(it, imageProxy) }
-            handler.post { binding.overlayView.updateDetectedQuad(quad) }
+            handler.post {
+                binding.overlayView.updateDetectedQuad(quad)
+                refreshQualityText()
+            }
         } catch (exc: Exception) {
             Log.e(TAG, "Card-outline analysis failed", exc)
         } finally {
@@ -551,7 +632,10 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
         if (autoCaptureRunnable != null) return
         val runnable = Runnable {
             autoCaptureRunnable = null
-            if (autoCaptureEnabled && autoCaptureArmed && isLevel && is3ALocked) {
+            // Auto-capture also waits for the card to be sharp and the phone still;
+            // dim light only warns, since it may be all there is.
+            val blockers = quality.issues(SystemClock.elapsedRealtime()) - CaptureQuality.Issue.DARK
+            if (autoCaptureEnabled && autoCaptureArmed && isLevel && is3ALocked && blockers.isEmpty()) {
                 autoCaptureArmed = false
                 takePhoto()
             }
@@ -674,6 +758,7 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
         private const val LEVEL_TOLERANCE_DEGREES = 3.0f
         private const val AUTO_FOCUS_STABILITY_MS = 400L
         private const val AUTO_CAPTURE_STABILITY_MS = 500L
+        private const val QUALITY_LOG_INTERVAL_MS = 2000L
 
         const val EXTRA_SIDE = "extra_side"
         const val SIDE_FRONT = "FRONT"

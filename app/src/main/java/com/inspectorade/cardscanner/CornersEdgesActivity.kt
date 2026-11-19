@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
@@ -12,8 +13,10 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.IntentCompat
+import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
@@ -21,11 +24,13 @@ import androidx.lifecycle.lifecycleScope
 import com.inspectorade.cardscanner.databinding.ActivityCornersEdgesBinding
 import com.inspectorade.cardscanner.grading.BorderLine
 import com.inspectorade.cardscanner.grading.BorderLines
+import com.inspectorade.cardscanner.grading.CardFlattener
 import com.inspectorade.cardscanner.grading.CornerEdgeAnalyzer
 import com.inspectorade.cardscanner.grading.SideResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.opencv.android.OpenCVLoader
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -40,6 +45,8 @@ class CornersEdgesActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityCornersEdgesBinding
     private var result: CornerEdgeAnalyzer.Result? = null
+    private var card: Bitmap? = null
+    private var lines: BorderLines? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,6 +72,14 @@ class CornersEdgesActivity : AppCompatActivity() {
             return
         }
         val lines = BorderLines(positions)
+        this.lines = lines
+        binding.wearTurnButton.setOnClickListener {
+            turnLauncher.launch(
+                Intent(this, CaptureActivity::class.java)
+                    .putExtra(CaptureActivity.EXTRA_SIDE, intent.getStringExtra(EXTRA_SIDE))
+                    .putExtra(CaptureActivity.EXTRA_TURNED, true)
+            )
+        }
 
         lifecycleScope.launch {
             val (card, analysis) = try {
@@ -78,16 +93,69 @@ class CornersEdgesActivity : AppCompatActivity() {
                 finish()
                 return@launch
             }
-            result = analysis
-            logResult(analysis)
+            this@CornersEdgesActivity.card = card
+            show(analysis)
+        }
+    }
+
+    private fun show(analysis: CornerEdgeAnalyzer.Result) {
+        val card = card ?: return
+        val lines = lines ?: return
+        result = analysis
+        logResult(analysis)
+        lifecycleScope.launch {
             val highlighted = withContext(Dispatchers.Default) { highlighted(card, analysis) }
             binding.wearProgress.visibility = View.GONE
             binding.wearCardImage.setImageBitmap(highlighted)
             showGrades(analysis)
             showCornerTiles(highlighted, lines, analysis)
+            binding.wearHintText.text = getString(if (analysis.confirmed) R.string.wear_confirmed else R.string.wear_unconfirmed_hint) +
+                "\n" + getString(R.string.wear_hint)
+            binding.wearTurnButton.setText(if (analysis.confirmed) R.string.wear_turn_recheck_button else R.string.wear_turn_button)
+            binding.wearTurnButton.isEnabled = true
             binding.wearDoneButton.isEnabled = true
         }
     }
+
+    /**
+     * The turned second photo: flattened like the first, turned back the right
+     * way up, and analyzed together with it, so only wear seen in both counts.
+     */
+    private val turnLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { activityResult ->
+            if (activityResult.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+            val uri = activityResult.data?.getStringExtra(ReviewActivity.EXTRA_JPEG_URI)?.toUri() ?: return@registerForActivityResult
+            val card = card ?: return@registerForActivityResult
+            val lines = lines ?: return@registerForActivityResult
+            binding.wearTurnButton.isEnabled = false
+            binding.wearDoneButton.isEnabled = false
+            binding.wearProgress.visibility = View.VISIBLE
+            binding.wearHintText.setText(R.string.wear_checking_turned)
+            lifecycleScope.launch {
+                val confirmed = try {
+                    withContext(Dispatchers.Default) {
+                        check(OpenCVLoader.initLocal())
+                        val photo = CardFlattener.loadUpright(contentResolver, uri)
+                        val flattened = try { CardFlattener.flatten(photo) } finally { photo.release() }
+                        if (!flattened.cardFound) null
+                        else CornerEdgeAnalyzer.analyze(card, lines, turnedAround(flattened.bitmap))
+                    }
+                } catch (exc: Exception) {
+                    Log.e(TAG, "Turned photo analysis failed", exc)
+                    null
+                }
+                if (confirmed == null) {
+                    Toast.makeText(this@CornersEdgesActivity, R.string.wear_turned_not_found, Toast.LENGTH_LONG).show()
+                    result?.let(::show)
+                } else {
+                    show(confirmed)
+                }
+            }
+        }
+
+    /** [bitmap] rotated 180°: a card photographed turned around, back the right way up. */
+    private fun turnedAround(bitmap: Bitmap): Bitmap =
+        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(180f) }, false)
 
     /** The card with whitening and missing corner material painted in. */
     private fun highlighted(card: Bitmap, analysis: CornerEdgeAnalyzer.Result): Bitmap {
@@ -111,7 +179,9 @@ class CornersEdgesActivity : AppCompatActivity() {
                 resources.getQuantityString(R.plurals.wear_chips, edge.chips, edge.chips),
                 edge.dentedFraction * 100,
             )
-        }
+        } + analysis.corners.filter { it.possibleDing }.takeIf { it.isNotEmpty() }?.let { dings ->
+            "\n" + getString(R.string.wear_possible_dings, dings.joinToString(", ") { it.corner.label.lowercase() })
+        }.orEmpty()
     }
 
     /** Enlarged crops of each corner, labeled with its wear. */
@@ -152,8 +222,8 @@ class CornersEdgesActivity : AppCompatActivity() {
                     Locale.US, "%s\n≈%s · %.2f mm*", corner.corner.label,
                     CornerEdgeAnalyzer.cornerGradeFor(corner).let { if (it <= 5) "≤5" else "$it" },
                     corner.roundingMm,
-                )
-                setTextColor(getColor(R.color.white))
+                ) + if (corner.possibleDing) "\n" + getString(R.string.wear_possible_ding) else ""
+                setTextColor(getColor(if (corner.possibleDing) R.color.warning else R.color.white))
                 textSize = 11f
                 gravity = Gravity.CENTER
             })
@@ -174,7 +244,11 @@ class CornersEdgesActivity : AppCompatActivity() {
         val summary = (intent.getStringExtra(EXTRA_CENTERING_SUMMARY) ?: "") +
             "\nCorners ${grade(analysis.cornerGrade)} · Edges ${grade(analysis.edgeGrade)}"
         val sideResult = IntentCompat.getSerializableExtra(intent, EXTRA_SIDE_RESULT, SideResult::class.java)
-            ?.copy(cornerGrade = analysis.cornerGrade, edgeGrade = analysis.edgeGrade)
+            ?.copy(
+                cornerGrade = analysis.cornerGrade,
+                edgeGrade = analysis.edgeGrade,
+                possibleDings = analysis.corners.filter { it.possibleDing }.map { it.corner.label.lowercase() },
+            )
         setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SUMMARY, summary).putExtra(EXTRA_SIDE_RESULT, sideResult))
         finish()
     }

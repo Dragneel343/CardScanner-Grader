@@ -1,19 +1,20 @@
 package com.inspectorade.cardscanner.identify
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.Optional
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Minimal client for the TCGdex card database (https://tcgdex.dev, MIT-licensed,
  * free, no API key). Card search, card details (set, rarity, variants, and daily
- * TCGplayer/Cardmarket pricing), and official card images.
+ * TCGplayer/Cardmarket pricing). Its images load through [CardImages].
  */
 object TcgdexClient {
 
@@ -85,37 +86,50 @@ object TcgdexClient {
         return sets
     }
 
-    /** Official card image; [quality] is "low" (thumbnail) or "high". */
-    suspend fun image(imageBase: String, quality: String = "low"): Bitmap? = withContext(Dispatchers.IO) {
-        val connection = (URL("$imageBase/$quality.png").openConnection() as HttpURLConnection).apply {
-            connectTimeout = TIMEOUT_MS
-            readTimeout = TIMEOUT_MS
-        }
-        try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) null
-            else connection.inputStream.use { BitmapFactory.decodeStream(it) }
-        } finally {
-            connection.disconnect()
+    // Responses already fetched this session, by URL: identification asks the same
+    // searches again (a retake, Back and forth), and each one counts against the
+    // server's rate limit. Null is a cached 404.
+    private val responses = ConcurrentHashMap<String, Optional<String>>()
+
+    /**
+     * Body of a GET, or null on 404. A busy server (429, 5xx) is retried after a
+     * short, growing pause — identification makes a burst of searches, and
+     * TCGdex answers 503 when it's rate-limiting. Throws on network failure or
+     * once retries run out.
+     */
+    private suspend fun get(url: String): String? {
+        responses[url]?.let { return it.orElse(null) }
+        var attempt = 0
+        while (true) {
+            val (code, body) = fetch(url)
+            when {
+                code == HttpURLConnection.HTTP_OK || code == HttpURLConnection.HTTP_NOT_FOUND -> {
+                    responses[url] = Optional.ofNullable(body)
+                    return body
+                }
+                (code == 429 || code >= 500) && attempt < RETRIES -> delay(RETRY_DELAY_MS shl attempt++)
+                else -> error("TCGdex HTTP $code for $url")
+            }
         }
     }
 
-    /** Body of a GET, or null on 404. Throws on network failure or other errors. */
-    private suspend fun get(url: String): String? = withContext(Dispatchers.IO) {
+    /** Status code and, if 200, the body. */
+    private suspend fun fetch(url: String): Pair<Int, String?> = withContext(Dispatchers.IO) {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = TIMEOUT_MS
             readTimeout = TIMEOUT_MS
             setRequestProperty("Accept", "application/json")
         }
         try {
-            when (connection.responseCode) {
-                HttpURLConnection.HTTP_OK -> connection.inputStream.bufferedReader().use { it.readText() }
-                HttpURLConnection.HTTP_NOT_FOUND -> null
-                else -> error("TCGdex HTTP ${connection.responseCode} for $url")
-            }
+            val code = connection.responseCode
+            code to if (code == HttpURLConnection.HTTP_OK) connection.inputStream.bufferedReader().use { it.readText() } else null
         } finally {
             connection.disconnect()
         }
     }
+
+    private const val RETRIES = 3
+    private const val RETRY_DELAY_MS = 500L
 
     private fun JSONObject.optStringOrNull(key: String): String? =
         if (has(key) && !isNull(key)) getString(key) else null

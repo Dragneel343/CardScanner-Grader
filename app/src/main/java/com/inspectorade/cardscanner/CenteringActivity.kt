@@ -35,7 +35,7 @@ import com.inspectorade.cardscanner.grading.LineStyle
 import com.inspectorade.cardscanner.grading.ReferenceGuide
 import com.inspectorade.cardscanner.grading.SideResult
 import com.inspectorade.cardscanner.identify.CardTextReader
-import com.inspectorade.cardscanner.identify.TcgdexClient
+import com.inspectorade.cardscanner.identify.CardImages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
@@ -123,7 +123,7 @@ class CenteringActivity : AppCompatActivity() {
 
         // Downloads while the photo is flattened; guides the inner lines if it arrives.
         val referenceImage = intent.getStringExtra(EXTRA_CARD_IMAGE)?.let { imageBase ->
-            lifecycleScope.async { runCatching { TcgdexClient.image(imageBase, quality = "high") }.getOrNull() }
+            lifecycleScope.async { runCatching { CardImages.load(imageBase, quality = "high") }.getOrNull() }
         }
 
         lifecycleScope.launch {
@@ -253,7 +253,7 @@ class CenteringActivity : AppCompatActivity() {
         binding.cardIdentityText.visibility = View.VISIBLE
         val imageBase = intent.getStringExtra(EXTRA_CARD_IMAGE) ?: return
         lifecycleScope.launch {
-            val thumb = runCatching { TcgdexClient.image(imageBase) }.getOrNull() ?: return@launch
+            val thumb = runCatching { CardImages.load(imageBase) }.getOrNull() ?: return@launch
             binding.referenceThumb.setImageBitmap(thumb)
             binding.referenceThumb.visibility = View.VISIBLE
         }

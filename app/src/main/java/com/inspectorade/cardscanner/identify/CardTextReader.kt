@@ -169,7 +169,8 @@ object CardTextReader {
         val names = scan.top()
             .sortedByDescending { it.boundingBox!!.height() }
             .map { cleanName(it.text) }
-            .filter { it.length >= 3 }
+            .filter { it.length >= 3 && !stageLabel.matches(it) }
+            .flatMap { name -> listOfNotNull(megaSpaced(name), name) }
             .distinct()
             .take(MAX_NAME_CANDIDATES)
 
@@ -179,6 +180,23 @@ object CardTextReader {
             bottomLines = bottomTexts,
         )
     }
+
+    // Labels printed in the top band that aren't the card's name — often as large
+    // as it ("MEGA" on a Mega card), and a name search matches substrings, so
+    // "MEGA" alone found Meganium.
+    private val stageLabel = Regex(
+        """(basic|stage\s*\d|mega|break|restored|baby|lv\.?\s*x|level\s*up|trainer|item|supporter|stadium|""" +
+            """pok[eé]mon tool|energy|evolves from.*|put .* on the .*)""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * XY-era Mega cards print the name as a big "M" against the rest ("MGallade
+     * EX"), which reads without the space TCGdex has ("M Gallade EX"); null if
+     * [name] isn't one.
+     */
+    private fun megaSpaced(name: String): String? =
+        Regex("""^M(\p{Lu}\p{Ll}.*)""").find(name)?.let { "M ${it.groupValues[1]}" }
 
     /** Drops HP values, energy-symbol noise and stray punctuation around the name. */
     private fun cleanName(raw: String): String =

@@ -44,7 +44,13 @@ class ReviewActivity : AppCompatActivity() {
         }
 
         // The front goes through card selection first; the back has nothing to identify.
+        // A turned second photo is only wanted for itself, by corners & edges.
         binding.confirmButton.setOnClickListener {
+            if (intent.getBooleanExtra(EXTRA_TURNED, false)) {
+                setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_JPEG_URI, jpegUri.toString()))
+                finish()
+                return@setOnClickListener
+            }
             nextLauncher.launch(
                 if (isFront) {
                     Intent(this, CardSelectActivity::class.java)
@@ -77,5 +83,6 @@ class ReviewActivity : AppCompatActivity() {
         const val EXTRA_JPEG_URI = "extra_jpeg_uri"
         const val EXTRA_RAW_URI = "extra_raw_uri"
         const val EXTRA_SIDE = "extra_side"
+        const val EXTRA_TURNED = "extra_turned"
     }
 }

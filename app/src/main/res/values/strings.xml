@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Card Scanner</string>
-    <string name="capture_button">Capture</string>
+    <string name="app_name">Card Scanner</string>    <string name="capture_button">Capture</string>
     <string name="camera_permission_rationale">Camera access is required to scan cards.</string>
     <string name="auto_capture_toggle">Auto-capture</string>
     <string name="torch_off">💡 Light</string>
     <string name="torch_on">💡 On</string>
-    <string name="quality_all_good">Light ✓ · Sharp ✓ · Steady ✓</string>
+    <string name="quality_all_good">Light ✓ · Sharp ✓ · Steady ✓ · Even ✓</string>
     <string name="quality_no_card">Light %1$s · Sharp – (no card found) · Steady %2$s</string>
-    <string name="quality_checks">Light %1$s · Sharp %2$s · Steady %3$s</string>
+    <string name="quality_checks">Light %1$s · Sharp %2$s · Steady %3$s · Even %4$s</string>
+    <string name="quality_uneven_light">⚠ Uneven light or a shadow by the card — light it evenly from above</string>
+    <string name="quality_glare">⚠ Glare on the card — move the light or tilt the card slightly</string>
     <string name="quality_dark">⚠ Too dark — add light, or tap 💡 Light</string>
     <string name="quality_dark_no_torch">⚠ Too dark — add more light</string>
     <string name="quality_blurry">⚠ Card isn\'t sharp — tap the card to refocus</string>
@@ -37,6 +38,7 @@
     <string name="card_select_looking_up">Looking it up…</string>
     <string name="card_select_searching">Searching…</string>
     <string name="card_select_confident">Found it — check it matches your card, then confirm.</string>
+    <string name="card_select_reprints">This card was reprinted with the same artwork and number — tap the set that matches yours (reprints carry their own set logo or stamp).</string>
     <string name="card_select_visual">Best match by artwork — check it matches your card, then confirm.</string>
     <plurals name="card_select_choose">
         <item quantity="one">1 possible match — tap it to compare.</item>
@@ -78,6 +80,14 @@
     </plurals>
     <string name="wear_hint">Magenta = whitening (bare card stock), cyan = dents and chips. *Corner rounding (mm) is shown but not graded yet. ≈ = estimate, not yet calibrated against graded cards. Glare can look like whitening — retake if a highlight follows a reflection.</string>
     <string name="wear_back_button">← Centering</string>
+    <string name="wear_possible_ding">possible ding — check</string>
+    <string name="wear_possible_dings">⚠ Possible ding (seen in one photo only, not graded): %1$s — check it by eye.</string>
+    <string name="wear_turn_button">↻ Turn card 180° &amp; check again</string>
+    <string name="wear_turn_recheck_button">↻ Check with another turned photo</string>
+    <string name="wear_checking_turned">Checking against the turned photo…</string>
+    <string name="wear_turned_not_found">Couldn\'t find the card in the turned photo — try again.</string>
+    <string name="wear_confirmed">✓ Checked against a turned photo: only wear seen in both counts.</string>
+    <string name="wear_unconfirmed_hint">Shine at the edges (holo, foil, glare) can look like whitening. Turn the card 180° and check again: wear stays put, shine moves.</string>
     <string name="wear_skipped">Corners &amp; edges not assessed — the card\'s outline wasn\'t found</string>
     <string name="wear_failed">Couldn\'t analyze the corners and edges.</string>
     <string name="wear_card_description">Card with whitening and corner wear highlighted</string>
@@ -88,6 +98,7 @@
     <string name="grade_summary_nothing">Nothing could be graded yet — retake the photos.</string>
     <string name="grade_summary_not_counted">not counted</string>
     <string name="grade_summary_centering_not_counted">The %1$s\'s centering wasn\'t counted: the card\'s edges weren\'t found (or came out skewed) and the lines were left as detected. Retake, or drag the lines into place.</string>
+    <string name="grade_summary_possible_dings">Possible ding on the %1$s (%2$s corner), seen in only one of the two photos and not graded — check it by eye.</string>
     <string name="grade_summary_missing_side">The %1$s hasn\'t been graded yet.</string>
     <string name="grade_summary_missing_wear">Corners and edges weren\'t assessed on the %1$s (the card\'s outline wasn\'t found).</string>
     <string name="grade_summary_missing_surface">Surface isn\'t graded yet, so these are upper bounds: surface wear can only bring the grade down.</string>

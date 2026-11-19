@@ -3,6 +3,7 @@ package com.inspectorade.cardscanner.grading
 import android.graphics.Bitmap
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -23,9 +24,13 @@ import kotlin.math.sin
  * - Corner rounding: how far in from a factory corner (3 mm radius) the
  *   corner's boundary sits, in millimeters.
  *
- * Works best on a dark background. Glare can look like whitening, and borders
- * that are themselves white or pale silver can't show it — those are reported
- * as not assessable rather than guessed at.
+ * Works best on a dark background. In a single photo, shine at the cut — light
+ * catching the cut edge, foil sparkle, holo running off the edge — looks just
+ * like whitening. Given a second photo of the same side with the card turned
+ * 180° (see [analyze]), wear counts only where both show it: shine moves with
+ * the card's angle to the light, wear doesn't. Borders that are themselves white
+ * or pale silver can't show whitening — reported as not assessable rather than
+ * guessed at.
  */
 object CornerEdgeAnalyzer {
 
@@ -52,6 +57,13 @@ object CornerEdgeAnalyzer {
         val roundingMm: Double,
         val whitenedFraction: Double,
         val assessable: Boolean,
+        /**
+         * With a turned second photo: one photo showed this corner clearly marked
+         * and the other didn't. Shine does that — but so does a ding, which shows
+         * by how light falls on it and can catch it at one angle only. Not graded
+         * either way; the user is asked to check it by eye.
+         */
+        val possibleDing: Boolean = false,
     )
 
     class Result(
@@ -63,6 +75,8 @@ object CornerEdgeAnalyzer {
         val missingPixels: IntArray,
         /** Factory corner radius in pixels — sizes the corner close-ups. */
         val cornerRadius: Int,
+        /** Whether a turned second photo confirmed the wear (see [analyze]). */
+        val confirmed: Boolean,
     ) {
         val edgeGrade: Int? get() = edges.filter { it.assessable }.maxOfOrNull { it.wear }?.let(::edgeGradeFor)
         val cornerGrade: Int? get() = corners.filter { it.assessable }.minOfOrNull { cornerGradeFor(it) }
@@ -75,55 +89,139 @@ object CornerEdgeAnalyzer {
     // Depths in pixels on the standard 1000-px-wide flattened card.
     private const val SEARCH_OUTSIDE = 10   // look this far outside the line for the cut…
     private const val SEARCH_INSIDE = 30    // …and this far in
-    private const val PAPER_DEPTH = 6       // whitening is looked for this deep past the cut
+    private const val EDGE_FACE = 3         // the card's edge face can show this far in from the cut…
+    private const val PAPER_DEPTH = 6       // …and whitening is looked for this deep past it
     private const val DENT = 4              // cut this much further in than usual: a dent
     private const val REFERENCE_NEAR = 12   // band the border's own color comes from
     private const val REFERENCE_FAR = 20
     private const val MIN_RUN = 3           // shortest whitened run that counts
     private const val DENT_WINDOW = 40      // a dent is judged against the cut this far either side
     private const val REFERENCE_WINDOW = 40 // border color is taken from this far either side
+    // Two photos of the card line up to within a few pixels after flattening, so
+    // wear in one is matched against the other this far along the edge either side.
+    private const val MATCH_TOLERANCE = 4
+    private const val MATCH_TOLERANCE_STEPS = 2 // the same, in steps around a corner's arc
+    // A corner marked this much in one photo but no more than clean in both: a possible ding.
+    private const val ONE_PHOTO_MARK = 0.10
+    private const val CLEAN_CORNER = 0.03
 
     // Color tests, in CIELAB.
     private const val COLORFUL = 15.0       // border chroma above this: a colored border
     private const val PAPER_CHROMA = 0.5    // paper: at most this share of the border's chroma…
-    private const val ABOVE_BACKGROUND = 20.0 // …and this much lighter than the background
+    private const val ABOVE_BACKGROUND = 20.0 // …and this much lighter than the background…
+    private const val SAME_HUE = 0.8        // …and if its hue is the border's (cosine of the a/b angle)…
+    private const val PAPER_MAX_CHROMA = 12.0 // …nearly colorless: beige card stock, not a lit-up border
+    private const val DEEP_PAPER = 4        // or paper-like this many px deep: past a lit rim at the cut
+    // Card stock's own hue (cream), as CIELAB a/b: borders near it can't use the hue test.
+    private const val CARD_STOCK_A = 2.0
+    private const val CARD_STOCK_B = 12.0
     private const val NEUTRAL = 15.0
     private const val LIGHTER_NEUTRAL = 25.0 // on gray/black borders: this much lighter, and gray
     private const val PALE_BORDER_L = 70.0  // neutral borders lighter than this can't be judged
-    private const val CARD_START = 0.5      // the cut: first pixel at least this far from background toward border
+    private const val CARD_START = 0.5      // the cut: first pixel at least this far from background toward border…
+    private const val CUT_SUSTAIN = 5       // …with this many in a row (px) that are
 
-    fun analyze(card: Bitmap, lines: BorderLines): Result {
-        val width = card.width
-        val height = card.height
-        val pixels = IntArray(width * height)
-        card.getPixels(pixels, 0, width, 0, 0, width, height)
-        fun labAt(x: Int, y: Int): DoubleArray =
-            ColorLab.lab(pixels[y.coerceIn(0, height - 1) * width + x.coerceIn(0, width - 1)])
-
-        val left = lines[BorderLine.OUTER_LEFT].roundToInt()
-        val right = lines[BorderLine.OUTER_RIGHT].roundToInt()
-        val top = lines[BorderLine.OUTER_TOP].roundToInt()
-        val bottom = lines[BorderLine.OUTER_BOTTOM].roundToInt()
-        val cardWidth = (right - left).coerceAtLeast(1)
-        val scale = cardWidth / 1000.0
-        fun px(standard: Int) = maxOf(1, (standard * scale).roundToInt())
-        val mmPerPixel = CARD_WIDTH_MM / cardWidth
-        val radius = (CORNER_RADIUS_MM / mmPerPixel).roundToInt()
+    /**
+     * Finds the wear on [card]. [turned] is an optional second photo of the same
+     * side, taken with the card turned 180° and already turned back and
+     * flattened into the same frame as [card]: then whitening, chips and dents
+     * count only where both photos show them (within a few pixels), and a
+     * corner's rounding is the smaller of the two. Highlights are on [card].
+     */
+    fun analyze(card: Bitmap, lines: BorderLines, turned: Bitmap? = null): Result {
+        val first = Scan(card, lines)
+        val second = turned?.let { Scan(it, lines) }
+        val tolerance = first.px(MATCH_TOLERANCE)
+        fun confirmedBy(flags: List<Boolean>, other: List<Boolean>?, within: Int): List<Boolean> =
+            if (other == null) flags
+            else flags.indices.map { i ->
+                flags[i] && (maxOf(0, i - within)..minOf(other.size - 1, i + within)).any { other[it] }
+            }
 
         val whitened = mutableListOf<Int>()
         val missing = mutableListOf<Int>()
 
+        val edges = Side.entries.map { side ->
+            val scan = first.edges.getValue(side)
+            val other = second?.edges?.getValue(side)
+            if (!scan.assessable || other?.assessable == false) return@map EdgeResult(side, 0.0, 0, 0.0, false)
+            val paper = confirmedBy(scan.paper, other?.paper, tolerance)
+            val runs = runsOf(paper).filter { it.last - it.first + 1 >= first.px(MIN_RUN) }
+            for (run in runs) for (i in run) first.paintPaper(side, i, whitened)
+            val dented = confirmedBy(scan.dented, other?.dented, tolerance)
+            for (i in dented.indices) if (dented[i]) first.paintMissing(side, i, missing)
+            EdgeResult(
+                side,
+                whitenedFraction = runs.sumOf { it.last - it.first + 1 }.toDouble() / paper.size,
+                chips = runs.size,
+                dentedFraction = dented.count { it }.toDouble() / dented.size,
+                assessable = true,
+            )
+        }
+
+        val corners = Corner.entries.map { corner ->
+            val scan = first.corners.getValue(corner)
+            val other = second?.corners?.getValue(corner)
+            if (!scan.assessable || other?.assessable == false) return@map CornerResult(corner, 0.0, 0.0, false)
+            val paper = confirmedBy(scan.paperSteps, other?.paperSteps, MATCH_TOLERANCE_STEPS)
+            for (step in paper.indices) if (paper[step]) first.paintCorner(corner, step, whitened)
+            val rounding = minOf(scan.roundingPx, other?.roundingPx ?: scan.roundingPx)
+            fun fraction(flags: List<Boolean>) = flags.count { it }.toDouble() / flags.size
+            val whitened = fraction(paper)
+            val inOnePhoto = other != null && maxOf(fraction(scan.paperSteps), fraction(other.paperSteps)) > ONE_PHOTO_MARK
+            CornerResult(
+                corner,
+                roundingMm = rounding.coerceAtLeast(0) * first.mmPerPixel,
+                whitenedFraction = whitened,
+                assessable = true,
+                possibleDing = inOnePhoto && whitened <= CLEAN_CORNER,
+            )
+        }
+
+        return Result(edges, corners, whitened.distinct().toIntArray(), missing.distinct().toIntArray(), first.radius, second != null)
+    }
+
+    /** What one side of the card shows along one edge: per point, card stock at the cut, and a dent. */
+    private class EdgeScan(val assessable: Boolean, val paper: List<Boolean>, val dented: List<Boolean>)
+
+    /** What one photo shows around a corner's arc: per step, card stock at the cut; and its rounding. */
+    private class CornerScan(val assessable: Boolean, val paperSteps: List<Boolean>, val roundingPx: Int)
+
+    /** One photo's findings at every point along the edges and around the corners. */
+    private class Scan(card: Bitmap, lines: BorderLines) {
+        private val width = card.width
+        private val height = card.height
+        private val pixels = IntArray(width * height).also { card.getPixels(it, 0, width, 0, 0, width, height) }
+        private fun labAt(x: Int, y: Int): DoubleArray =
+            ColorLab.lab(pixels[y.coerceIn(0, height - 1) * width + x.coerceIn(0, width - 1)])
+
+        private val left = lines[BorderLine.OUTER_LEFT].roundToInt()
+        private val right = lines[BorderLine.OUTER_RIGHT].roundToInt()
+        private val top = lines[BorderLine.OUTER_TOP].roundToInt()
+        private val bottom = lines[BorderLine.OUTER_BOTTOM].roundToInt()
+        private val cardWidth = (right - left).coerceAtLeast(1)
+        private val scale = cardWidth / 1000.0
+        fun px(standard: Int) = maxOf(1, (standard * scale).roundToInt())
+        val mmPerPixel = CARD_WIDTH_MM / cardWidth
+        val radius = (CORNER_RADIUS_MM / mmPerPixel).roundToInt()
+
+        // Where whitening is looked for, from the cut found at a point: past the
+        // card's own edge face — its white core, which shows as a thin pale
+        // sliver along the cut wherever the camera sees the edge a little from
+        // the side — onto the card's face, where graders look for card stock.
+        private fun paperBand(cut: Int) = (cut + px(EDGE_FACE)) until (cut + px(EDGE_FACE + PAPER_DEPTH))
+
         // Pixel at [along] on [side]'s line, [inward] pixels in (negative: outside).
-        fun point(side: Side, along: Int, inward: Int): Pair<Int, Int> = when (side) {
+        private fun point(side: Side, along: Int, inward: Int): Pair<Int, Int> = when (side) {
             Side.TOP -> along to top + inward
             Side.BOTTOM -> along to bottom - inward
             Side.LEFT -> left + inward to along
             Side.RIGHT -> right - inward to along
         }
-        fun span(side: Side) = if (side == Side.TOP || side == Side.BOTTOM) (left + radius)..(right - radius)
+        private fun span(side: Side) = if (side == Side.TOP || side == Side.BOTTOM) (left + radius)..(right - radius)
         else (top + radius)..(bottom - radius)
 
-        val references = Side.entries.associateWith { side ->
+        private val references = Side.entries.associateWith { side ->
             ColorLab.median(span(side).step(4).flatMap { along ->
                 (px(REFERENCE_NEAR)..px(REFERENCE_FAR) step 2).map { d -> point(side, along, d).let { (x, y) -> labAt(x, y) } }
             })
@@ -131,7 +229,7 @@ object CornerEdgeAnalyzer {
         // The border's own color around each point along a side: a rolling median,
         // so light that falls off toward the corners (a shaded border reads duller
         // and paler) isn't mistaken for wear. Indexed like span(side).
-        val localReferences = Side.entries.associateWith { side ->
+        private val localReferences = Side.entries.associateWith { side ->
             val positions = span(side).toList()
             val samples = positions.map { along ->
                 ColorLab.median((px(REFERENCE_NEAR)..px(REFERENCE_FAR) step 2).map { d ->
@@ -144,25 +242,32 @@ object CornerEdgeAnalyzer {
             }
             positions.indices.map { i -> coarse.getValue(i / 4 * 4) }
         }
-        val backgrounds = Side.entries.associateWith { side ->
+        private val backgrounds = Side.entries.associateWith { side ->
             ColorLab.median(span(side).step(8).flatMap { along ->
                 (px(15)..px(35) step 5).map { d -> point(side, along, -d).let { (x, y) -> labAt(x, y) } }
             })
         }
 
         // Where the card starts along a line of pixels running inward: the first
-        // one clearly closer to the border's color than the background's.
-        fun cutAlong(sample: (Int) -> DoubleArray, reference: DoubleArray, background: DoubleArray): Int? {
+        // one clearly closer to the border's color than the background's, with
+        // card continuing past it — a speck of lint or dust on the surface just
+        // outside the cut is a pixel or two of light with surface beyond it, and
+        // would otherwise read as whitened card stock.
+        private fun cutAlong(sample: (Int) -> DoubleArray, reference: DoubleArray, background: DoubleArray): Int? {
             val gap = ColorLab.distance(reference, background)
+            fun isCard(d: Int) = ColorLab.distance(sample(d), background) >= gap * CARD_START
             return (-px(SEARCH_OUTSIDE)..px(SEARCH_INSIDE)).firstOrNull { d ->
-                ColorLab.distance(sample(d), background) >= gap * CARD_START
+                (d until d + px(CUT_SUSTAIN)).all(::isCard)
             }
         }
 
-        val edges = Side.entries.map { side ->
+        private val edgeCuts = mutableMapOf<Side, List<Int?>>()
+        private val edgeUsual = mutableMapOf<Side, List<Int>>()
+
+        val edges: Map<Side, EdgeScan> = Side.entries.associateWith { side ->
             val reference = references.getValue(side)
             val background = backgrounds.getValue(side)
-            if (!assessable(reference)) return@map EdgeResult(side, 0.0, 0, 0.0, false)
+            if (!assessable(reference)) return@associateWith EdgeScan(false, emptyList(), emptyList())
             val positions = span(side).toList()
             val local = localReferences.getValue(side)
             val cuts = positions.mapIndexed { i, along ->
@@ -176,34 +281,43 @@ object CornerEdgeAnalyzer {
                 cuts.subList(maxOf(0, i - window), minOf(cuts.size, i + window + 1)).filterNotNull().sorted()
                     .let { if (it.isEmpty()) 0 else it[it.size / 2] }
             }
-
+            edgeCuts[side] = cuts
+            edgeUsual[side] = usual
             val paper = positions.indices.map { i ->
                 val cut = cuts[i] ?: return@map false
-                (cut until cut + px(PAPER_DEPTH)).count { d ->
-                    point(side, positions[i], d).let { (x, y) -> isPaper(labAt(x, y), local[i], background) }
-                } >= 2
+                showsPaper((paperBand(cut)).map { d ->
+                    point(side, positions[i], d).let { (x, y) -> labAt(x, y) }
+                }, local[i], background, scale)
             }
-            val runs = runsOf(paper).filter { it.last - it.first + 1 >= px(MIN_RUN) }
-            for (run in runs) for (i in run) {
-                val cut = cuts[i] ?: continue
-                for (d in cut until cut + px(PAPER_DEPTH)) point(side, positions[i], d).let { (x, y) ->
-                    if (isPaper(labAt(x, y), local[i], background)) whitened += y * width + x
-                }
-            }
-            val dented = positions.indices.filter { i -> (cuts[i] ?: Int.MAX_VALUE) > usual[i] + px(DENT) }
-            for (i in dented) for (d in usual[i]..minOf(cuts[i] ?: usual[i], usual[i] + px(SEARCH_INSIDE))) {
-                point(side, positions[i], d).let { (x, y) -> missing += y * width + x }
-            }
-            EdgeResult(
-                side,
-                whitenedFraction = runs.sumOf { it.last - it.first + 1 }.toDouble() / positions.size,
-                chips = runs.size,
-                dentedFraction = dented.size.toDouble() / positions.size,
-                assessable = true,
-            )
+            val dented = positions.indices.map { i -> (cuts[i] ?: Int.MAX_VALUE) > usual[i] + px(DENT) }
+            EdgeScan(true, paper, dented)
         }
 
-        val corners = Corner.entries.map { corner ->
+        /** Adds the card-stock pixels at point [i] along [side] to [into]. */
+        fun paintPaper(side: Side, i: Int, into: MutableList<Int>) {
+            val cut = edgeCuts.getValue(side)[i] ?: return
+            val along = span(side).first + i
+            val local = localReferences.getValue(side)[i]
+            val background = backgrounds.getValue(side)
+            for (d in paperBand(cut)) point(side, along, d).let { (x, y) ->
+                if (isPaper(labAt(x, y), local, background, strict = false)) into += y * width + x
+            }
+        }
+
+        /** Adds the missing material at a dent at point [i] along [side] to [into]. */
+        fun paintMissing(side: Side, i: Int, into: MutableList<Int>) {
+            val usual = edgeUsual.getValue(side)[i]
+            val cut = edgeCuts.getValue(side)[i] ?: usual
+            val along = span(side).first + i
+            for (d in usual..minOf(cut, usual + px(SEARCH_INSIDE))) point(side, along, d).let { (x, y) -> into += y * width + x }
+        }
+
+        private class Arc(
+            val reference: DoubleArray, val background: DoubleArray, val cuts: List<Int?>, val point: (Int, Int) -> Pair<Int, Int>,
+        )
+        private val arcs = mutableMapOf<Corner, Arc>()
+
+        val corners: Map<Corner, CornerScan> = Corner.entries.associateWith { corner ->
             val (sides, startDegrees) = when (corner) {
                 Corner.TOP_LEFT -> (Side.TOP to Side.LEFT) to 180.0
                 Corner.TOP_RIGHT -> (Side.TOP to Side.RIGHT) to 270.0
@@ -218,7 +332,7 @@ object CornerEdgeAnalyzer {
                 if (sides.first == Side.TOP) vertical.first() else vertical.last(),
             )
             val background = average(backgrounds.getValue(sides.first), backgrounds.getValue(sides.second))
-            if (!assessable(reference)) return@map CornerResult(corner, 0.0, 0.0, false)
+            if (!assessable(reference)) return@associateWith CornerScan(false, emptyList(), 0)
 
             // A factory corner: an arc of the standard radius joining the two lines.
             val centerX = if (sides.second == Side.LEFT) left + radius else right - radius
@@ -232,43 +346,64 @@ object CornerEdgeAnalyzer {
             val cuts = (0..steps).map { step ->
                 cutAlong({ d -> arcPoint(step, d).let { (x, y) -> labAt(x, y) } }, reference, background)
             }
+            arcs[corner] = Arc(reference, background, cuts, ::arcPoint)
             // The arc's ends sit on the straight edges: their cut is where this
             // card's edge normally is, so rounding is measured relative to that.
             val baseline = listOfNotNull(cuts.first(), cuts.last()).minOrNull() ?: 0
             val recessions = cuts.map { (it ?: px(SEARCH_INSIDE)) - baseline }
             val paperSteps = (0..steps).map { step ->
                 val cut = cuts[step] ?: return@map false
-                (cut until cut + px(PAPER_DEPTH)).count { d ->
-                    arcPoint(step, d).let { (x, y) -> isPaper(labAt(x, y), reference, background) }
-                } >= 2
+                showsPaper((paperBand(cut)).map { d ->
+                    arcPoint(step, d).let { (x, y) -> labAt(x, y) }
+                }, reference, background, scale)
             }
-            for (step in 0..steps) {
-                val cut = cuts[step] ?: continue
-                if (paperSteps[step]) for (d in cut until cut + px(PAPER_DEPTH)) arcPoint(step, d).let { (x, y) ->
-                    if (isPaper(labAt(x, y), reference, background)) whitened += y * width + x
-                }
-            }
-            CornerResult(
-                corner,
-                roundingMm = (recessions.maxOrNull() ?: 0).coerceAtLeast(0) * mmPerPixel,
-                whitenedFraction = paperSteps.count { it }.toDouble() / paperSteps.size,
-                assessable = true,
-            )
+            CornerScan(true, paperSteps, recessions.maxOrNull() ?: 0)
         }
 
-        return Result(edges, corners, whitened.distinct().toIntArray(), missing.distinct().toIntArray(), radius)
+        /** Adds the card-stock pixels at [step] around [corner]'s arc to [into]. */
+        fun paintCorner(corner: Corner, step: Int, into: MutableList<Int>) {
+            val arc = arcs.getValue(corner)
+            val cut = arc.cuts[step] ?: return
+            for (d in paperBand(cut)) arc.point(step, d).let { (x, y) ->
+                if (isPaper(labAt(x, y), arc.reference, arc.background, strict = false)) into += y * width + x
+            }
+        }
     }
+
+    /**
+     * Whether the pixels running in from the cut ([inward], cut first) show card
+     * stock: a couple of clearly bare ones, or pale ones reaching deep. Light
+     * catching the cut edge makes a pale rim in the border's hue only ~3 px
+     * deep, while card stock on a worn edge reaches further in — and on a
+     * yellow border can be beige, the border's own hue, so depth is what tells
+     * them apart there.
+     */
+    private fun showsPaper(inward: List<DoubleArray>, border: DoubleArray, background: DoubleArray, scale: Double): Boolean =
+        inward.count { isPaper(it, border, background, strict = true) } >= 2 ||
+            inward.count { isPaper(it, border, background, strict = false) } >= maxOf(1, (DEEP_PAPER * scale).roundToInt())
 
     /** Borders that are themselves white or pale gray can't show whitening. */
     private fun assessable(border: DoubleArray) =
         ColorLab.chroma(border) >= COLORFUL || border[0] < PALE_BORDER_L
 
-    /** Bare card stock: much less colorful than the border and not dark like the background. */
-    private fun isPaper(pixel: DoubleArray, border: DoubleArray, background: DoubleArray): Boolean {
+    /**
+     * Card stock: much less colorful than the border and not dark like the
+     * background. [strict] also rules out the border lit up: light catching the
+     * card's cut edge leaves a pale rim that keeps the border's hue (light blue
+     * on a blue back), so a pixel in the border's hue must be almost colorless.
+     * Not on yellow and other borders the hue of card stock itself, though:
+     * there worn, dirty edges are pale yellow too, and can't be told from a
+     * lit rim by color.
+     */
+    private fun isPaper(pixel: DoubleArray, border: DoubleArray, background: DoubleArray, strict: Boolean): Boolean {
         val borderChroma = ColorLab.chroma(border)
         val chroma = ColorLab.chroma(pixel)
         return if (borderChroma >= COLORFUL) {
-            chroma <= borderChroma * PAPER_CHROMA && pixel[0] >= background[0] + ABOVE_BACKGROUND
+            fun alignment(a: Double, b: Double, aChroma: Double) =
+                (a * border[1] + b * border[2]) / (aChroma * borderChroma).coerceAtLeast(1e-6)
+            val stockHued = alignment(CARD_STOCK_A, CARD_STOCK_B, hypot(CARD_STOCK_A, CARD_STOCK_B)) >= SAME_HUE
+            val litBorder = strict && !stockHued && alignment(pixel[1], pixel[2], chroma) >= SAME_HUE && chroma > PAPER_MAX_CHROMA
+            !litBorder && chroma <= borderChroma * PAPER_CHROMA && pixel[0] >= background[0] + ABOVE_BACKGROUND
         } else {
             pixel[0] >= border[0] + LIGHTER_NEUTRAL && chroma < NEUTRAL
         }

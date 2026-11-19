@@ -32,6 +32,8 @@ data class SideResult(
      * card, and the centering isn't counted.
      */
     val centeringCounted: Boolean = true,
+    /** Corners (by label) a turned second photo didn't confirm — possible dings, not graded. */
+    val possibleDings: List<String> = emptyList(),
 ) : Serializable
 
 /**

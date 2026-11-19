@@ -26,7 +26,7 @@ import com.inspectorade.cardscanner.grading.CardFlattener
 import com.inspectorade.cardscanner.grading.CardLayout
 import com.inspectorade.cardscanner.identify.CardIdentifier
 import com.inspectorade.cardscanner.identify.CardTextReader
-import com.inspectorade.cardscanner.identify.TcgdexClient
+import com.inspectorade.cardscanner.identify.CardImages
 import com.inspectorade.cardscanner.identify.VisualMatch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -127,7 +127,7 @@ class CardSelectActivity : AppCompatActivity() {
         val images = candidates.map { match ->
             lifecycleScope.async {
                 val image = thumbnails[match.id]
-                    ?: match.imageBase?.let { runCatching { TcgdexClient.image(it) }.getOrNull() }
+                    ?: match.imageBase?.let { runCatching { CardImages.load(it) }.getOrNull() }
                 image?.let { match to it }
             }
         }.awaitAll().filterNotNull()
@@ -139,9 +139,26 @@ class CardSelectActivity : AppCompatActivity() {
         val runnerUp = scored.getOrNull(1)?.second ?: -1.0
         if (best.second < MIN_VISUAL_SIMILARITY || best.second - runnerUp < MIN_VISUAL_LEAD) return
         if (selected != null) return // the user already chose
+        // A reprint has the same artwork (and often no image to compare at all):
+        // looking alike can't tell the original from it, so the user picks.
+        if (candidates.any { it.id != best.first.id && CardIdentifier.isReprintOf(it, best.first) }) {
+            binding.cardSelectStatus.setText(R.string.card_select_reprints)
+            return
+        }
         select(best.first)
         thumbViews[best.first.id]?.let { tile -> binding.candidateScroll.smoothScrollTo(tile.left, 0) }
         binding.cardSelectStatus.setText(R.string.card_select_visual)
+    }
+
+    /** Whether the user's card resembles [match]'s official image at all; false if it has none. */
+    private suspend fun looksLike(match: CardIdentifier.Match): Boolean {
+        val card = displayedCard ?: return false
+        val image = thumbnails[match.id]
+            ?: match.imageBase?.let { runCatching { CardImages.load(it) }.getOrNull() }
+            ?: return false
+        val similarity = withContext(Dispatchers.Default) { VisualMatch.similarity(card, image) }
+        Log.i(TAG, "Text match ${match.id} looks %.2f like the card".format(similarity))
+        return similarity >= MIN_CONFIRM_SIMILARITY
     }
 
     /** The card was photographed upside down: show it the right way up, and have centering turn it too. */
@@ -164,11 +181,15 @@ class CardSelectActivity : AppCompatActivity() {
         } finally {
             card.recycle()
         }
-        Log.i(TAG, "Card matches (confident=${result.confident}): ${result.matches.map { it.id }}")
-        showMatches(result.matches, preselect = result.confident)
+        // Text alone can be confidently wrong (a stray word that matches another
+        // card's name, plus a number it happens to have): it only stands if the
+        // card also looks like that printing's official image.
+        val confident = result.confident && result.matches.firstOrNull()?.let { looksLike(it) } == true
+        Log.i(TAG, "Card matches (confident=$confident, by text ${result.confident}): ${result.matches.map { it.id }}")
+        showMatches(result.matches, preselect = confident)
         binding.cardSelectStatus.text = when {
             result.matches.isEmpty() -> getString(R.string.card_select_no_match)
-            result.confident -> getString(R.string.card_select_confident)
+            confident -> getString(R.string.card_select_confident)
             else -> resources.getQuantityString(
                 R.plurals.card_select_choose, result.matches.size, result.matches.size
             )
@@ -246,7 +267,7 @@ class CardSelectActivity : AppCompatActivity() {
 
             if (match.id !in thumbnails && match.imageBase != null) {
                 lifecycleScope.launch {
-                    val thumb = runCatching { TcgdexClient.image(match.imageBase) }.getOrNull() ?: return@launch
+                    val thumb = runCatching { CardImages.load(match.imageBase) }.getOrNull() ?: return@launch
                     thumbnails[match.id] = thumb
                     image.setImageBitmap(thumb)
                 }
@@ -274,7 +295,7 @@ class CardSelectActivity : AppCompatActivity() {
         thumbnails[match.id]?.let(binding.officialImage::setImageBitmap)
         binding.officialProgress.visibility = View.VISIBLE
         officialJob = lifecycleScope.launch {
-            val high = runCatching { TcgdexClient.image(imageBase, quality = "high") }.getOrNull()
+            val high = runCatching { CardImages.load(imageBase, quality = "high") }.getOrNull()
             binding.officialProgress.visibility = View.GONE
             if (high != null) binding.officialImage.setImageBitmap(high)
         }
@@ -337,6 +358,9 @@ class CardSelectActivity : AppCompatActivity() {
         // much, before it's selected for the user.
         private const val MIN_VISUAL_SIMILARITY = 0.5
         private const val MIN_VISUAL_LEAD = 0.1
+        // Lower than picking by look alone: here the text already points to the card,
+        // and holo and lighting lower the score of the right one.
+        private const val MIN_CONFIRM_SIMILARITY = 0.35
         private const val EMPTY_THUMB_COLOR = 0xFF2A2A2A.toInt()
 
         const val EXTRA_JPEG_URI = "extra_jpeg_uri"

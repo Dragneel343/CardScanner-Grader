@@ -11,6 +11,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.inspectorade.cardscanner.grading.BorderDetector
 import com.inspectorade.cardscanner.grading.BorderLine
 import com.inspectorade.cardscanner.grading.CardFlattener
+import com.inspectorade.cardscanner.grading.CornerEdgeAnalyzer
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -30,8 +31,10 @@ import java.io.File
  * Put photos (JPEG) in the app's external files dir under `fixtures/` (adb push
  * or `adb shell cp` from Pictures/CardScanner). For each one this logs (tag
  * "Fixture") whether the card was found, its outline error and the centering,
- * and writes to `fixture_out/` the photo with the rough (red) and final (green)
- * outline, and the flattened card with its border lines.
+ * then corners & edges (grades, whitened % and chips per side, whitened % per
+ * corner), and writes to `fixture_out/` the photo with the rough (red) and final (green)
+ * outline, the flattened card with its border lines, the flattened card alone,
+ * and the card with its wear painted in.
  */
 @RunWith(AndroidJUnit4::class)
 class FixturePipelineTest {
@@ -40,13 +43,20 @@ class FixturePipelineTest {
     fun runFixtures() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val root = context.getExternalFilesDir(null)!!
-        val photos = File(root, "fixtures").listFiles { f -> f.extension.lowercase() == "jpg" }?.sortedBy { it.name }
+        // Created by the app, not adb: a folder adb made before the app ever ran
+        // can stay invisible to it.
+        val fixtures = File(root, "fixtures").apply { mkdirs() }
+        val photos = fixtures.listFiles { f -> f.extension.lowercase() == "jpg" }?.sortedBy { it.name }
         assumeTrue("No fixtures in ${root.path}/fixtures", !photos.isNullOrEmpty())
         check(OpenCVLoader.initLocal())
         val out = File(root, "fixture_out").apply { mkdirs() }
 
         val summary = StringBuilder()
-        for (file in photos!!) {
+        // X_turned.jpg is X.jpg's side photographed again with the card turned 180°:
+        // analyzed with X, not on its own.
+        val turnedPhotos = photos!!.filter { it.nameWithoutExtension.endsWith(TURNED) }
+            .associateBy { it.nameWithoutExtension.removeSuffix(TURNED) }
+        for (file in photos.filter { !it.nameWithoutExtension.endsWith(TURNED) }) {
             val photo = CardFlattener.loadUpright(context.contentResolver, Uri.fromFile(file))
             val result = CardFlattener.flatten(photo)
             // Named *back* for a card back, as the centering screen knows from the side.
@@ -65,6 +75,43 @@ class FixturePipelineTest {
             )
             Log.i(TAG, line)
             summary.appendLine(line)
+            if (result.cardFound) {
+                fun wearLine(label: String, wear: CornerEdgeAnalyzer.Result) =
+                    "%-18s corners≈%s edges≈%s  %s  corners %s".format(
+                        label, wear.cornerGrade, wear.edgeGrade,
+                        wear.edges.joinToString(" ") {
+                            if (!it.assessable) "${it.side.label.take(1)} –"
+                            else "%s %.1f%%/%d/%.1f%%".format(it.side.label.take(1), it.whitenedFraction * 100, it.chips, it.dentedFraction * 100)
+                        },
+                        wear.corners.joinToString(" ") {
+                            "%.0f%%/%.2fmm%s".format(it.whitenedFraction * 100, it.roundingMm, if (it.possibleDing) " ding?" else "")
+                        },
+                    ).also { Log.i(TAG, it); summary.appendLine(it) }
+                val wear = CornerEdgeAnalyzer.analyze(result.bitmap, lines)
+                wearLine("  one photo", wear)
+                saveWear(result.bitmap, wear, File(out, "${file.nameWithoutExtension}_wear.png"))
+
+                val turnedFile = turnedPhotos[file.nameWithoutExtension]
+                if (turnedFile != null) {
+                    val turnedPhoto = CardFlattener.loadUpright(context.contentResolver, Uri.fromFile(turnedFile))
+                    val turned = CardFlattener.flatten(turnedPhoto)
+                    turnedPhoto.release()
+                    if (!turned.cardFound) {
+                        Log.i(TAG, "  turned photo: card not found").also { summary.appendLine("  turned photo: card not found") }
+                    } else {
+                        val turnedBack = turnedAround(turned.bitmap)
+                        val confirmed = CornerEdgeAnalyzer.analyze(result.bitmap, lines, turnedBack)
+                        wearLine("  both photos", confirmed)
+                        saveWear(result.bitmap, confirmed, File(out, "${file.nameWithoutExtension}_wear_both.png"))
+                        File(out, "${file.nameWithoutExtension}_turned_card.png").outputStream().use {
+                            turnedBack.compress(Bitmap.CompressFormat.PNG, 100, it)
+                        }
+                    }
+                }
+            }
+            File(out, "${file.nameWithoutExtension}_card.png").outputStream().use {
+                result.bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }
 
             saveOutline(photo, result, File(out, "${file.nameWithoutExtension}_photo.jpg"))
             saveLines(result.bitmap, lines, File(out, "${file.nameWithoutExtension}_lines.jpg"))
@@ -89,6 +136,21 @@ class FixturePipelineTest {
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
     }
 
+    /** [card] rotated 180°: a card photographed turned around, back the right way up. */
+    private fun turnedAround(card: Bitmap): Bitmap =
+        Bitmap.createBitmap(card, 0, 0, card.width, card.height, android.graphics.Matrix().apply { postRotate(180f) }, false)
+
+    /** The card with whitening (magenta) and missing material (cyan) painted in, as on the screen. */
+    private fun saveWear(card: Bitmap, wear: CornerEdgeAnalyzer.Result, file: File) {
+        val copy = card.copy(Bitmap.Config.ARGB_8888, true)
+        val pixels = IntArray(copy.width * copy.height)
+        copy.getPixels(pixels, 0, copy.width, 0, 0, copy.width, copy.height)
+        for (i in wear.whitenedPixels) pixels[i] = Color.MAGENTA
+        for (i in wear.missingPixels) pixels[i] = Color.CYAN
+        copy.setPixels(pixels, 0, copy.width, 0, 0, copy.width, copy.height)
+        file.outputStream().use { copy.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
     private fun saveLines(card: Bitmap, lines: com.inspectorade.cardscanner.grading.BorderLines, file: File) {
         val copy = card.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(copy)
@@ -104,5 +166,6 @@ class FixturePipelineTest {
 
     private companion object {
         const val TAG = "Fixture"
+        const val TURNED = "_turned"
     }
 }

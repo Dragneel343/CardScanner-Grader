@@ -35,11 +35,39 @@ object CardIdentifier {
         val (matches, byNumber) = search(reading.nameCandidates, reading.numberCandidates)
         if (byNumber && matches.size == 1) return Result(matches, confident = true)
         // Either no number read cleanly, or several printings share it (Porygon
-        // 103a/103b/103): the full printed number, even misread, can settle it.
+        // 103a/103b/103): the full printed number, even misread, can settle it —
+        // unless a reprint of the same card (same name and number, its set's
+        // total the same or unknown) prints the original's number too (the 2026
+        // Classic Collection Pikachu reads "58/102" like Base Set's, and its set
+        // lists no total): then the user or the artwork decides. Kabutops 6/75
+        // and 6/100 are different cards, told apart by the total.
         return closestPrintedNumber(matches, reading.bottomLines)
+            ?.takeIf { best ->
+                matches.none {
+                    it.id != best.id && isReprintOf(it, best) && (
+                        CLASSIC_COLLECTION.containsMatchIn(it.setName) ||
+                            it.setOfficial == 0 || it.setOfficial == best.setOfficial
+                        )
+                }
+            }
             ?.let { best -> Result(listOf(best) + (matches - best), confident = true) }
             ?: Result(matches, confident = false)
     }
+
+    /**
+     * Possibly the same card in another set: the same name and collector number,
+     * or the same name with either in a "Classic Collection" set — those reprint
+     * old cards with the original's printed number ("58/102") but list them by
+     * their place in the collection (TCGdex has the 2026 Pikachu as #008).
+     */
+    fun isReprintOf(a: Match, b: Match): Boolean {
+        fun letters(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+        if (letters(a.name) != letters(b.name)) return false
+        return a.localId.trimStart('0') == b.localId.trimStart('0') ||
+            CLASSIC_COLLECTION.containsMatchIn(a.setName) || CLASSIC_COLLECTION.containsMatchIn(b.setName)
+    }
+
+    private val CLASSIC_COLLECTION = Regex("""classic\s+collection""", RegexOption.IGNORE_CASE)
 
     // A printed number counts as read if OCR's text is within this many edits of
     // it: "38/97" read as "3897" (slash dropped) is 1, as "3R97" is 2.
@@ -79,38 +107,134 @@ object CardIdentifier {
     }
 
     /**
-     * Name + number first — the first candidate number that exists for the name
-     * wins, so a stray code read off the bottom band just finds nothing — then
-     * name alone (number misread, or none printed, as on many promos). TCGdex's
-     * number filter is "contains" ("25" also returns 225 and 259), so hits are
-     * narrowed to the same digits, zero-padded or with a letter suffix: "103"
-     * keeps 103a/103b, "17" keeps 017. Also returns whether a number matched.
+     * Name + number first, then name alone (number misread, or none printed, as
+     * on many promos), then number alone with a misread name. Both databases are
+     * asked — TCGdex and the Pokémon TCG API ([PokemonTcgClient]) — and their
+     * printings merged: each lists some the other doesn't (the 2026 Classic
+     * Collection reprints are only in the latter), and either can be down or
+     * rate-limiting. Number filters match substrings ("25" also finds 225), so
+     * hits are narrowed to the same digits, zero-padded or with a letter suffix:
+     * "103" keeps 103a/103b, "17" keeps 017. Also returns whether a number
+     * settled it. Throws only if neither database answers.
      */
-    private suspend fun search(names: List<String>, numbers: List<String>): Pair<List<Match>, Boolean> {
-        val sets = TcgdexClient.sets().associateBy { it.id }
-        fun toMatches(cards: List<TcgdexClient.CardBrief>, name: String) = exactNamesFirst(
-            cards.mapNotNull { card ->
-                val set = sets[card.setId] ?: return@mapNotNull null
-                Match(card.id, card.name, card.localId, set.id, set.name, set.official, card.imageBase)
-            }.distinctBy { it.id },
-            name,
-        ).take(MAX_MATCHES)
+    private suspend fun search(readNames: List<String>, numbers: List<String>): Pair<List<Match>, Boolean> {
+        // Each name as read, then its core: OCR garbles the prefixes and suffixes
+        // printed in other fonts ("MEGA Gallade X" for M Gallade EX), and the
+        // search matches substrings, so "Gallade" still finds the card.
+        val names = readNames.flatMap { listOfNotNull(it, coreName(it)) }.distinct()
+        val sources = Sources()
 
-        for (number in numbers) {
-            val bare = number.trimStart('0').ifEmpty { "0" }
-            val sameNumber = Regex("""0*$bare(\D.*)?""")
-            for (name in names) {
-                val cards = TcgdexClient.searchCards(name = name, localId = bare)
-                    .filter { sameNumber.matches(it.localId) }
-                val hits = toMatches(cards, name)
-                if (hits.isNotEmpty()) return hits to true
-            }
+        // Every candidate number for the first name that finds any: the bottom band
+        // has stray digits too ("2" found Gallade POP 7 #2 before "100" found M
+        // Gallade EX), so if different numbers find different cards, it's open.
+        for (name in names) {
+            val byNumber = numbers.map { number ->
+                sources.find(name = name, number = number) { it.name.contains(name, ignoreCase = true) }
+            }.filter { it.isNotEmpty() }
+            if (byNumber.isEmpty()) continue
+            return exactNamesFirst(merged(byNumber.flatten()), name).take(MAX_MATCHES) to (byNumber.size == 1)
         }
         for (name in names) {
-            val hits = toMatches(TcgdexClient.searchCards(name = name), name)
-            if (hits.isNotEmpty()) return hits to false
+            val hits = sources.find(name = name, number = null) { it.name.contains(name, ignoreCase = true) }
+            if (hits.isNotEmpty()) return exactNamesFirst(hits, name).take(MAX_MATCHES) to false
         }
+        // The name misread ("M Galade X" for M Gallade EX, "Team Rocket Moltres"
+        // for Team Rocket's Moltres ex), so no search by it found anything: look
+        // the number up alone and keep the cards whose name is close to what was read.
+        for (number in numbers) {
+            if (number.trimStart('0').length < MIN_FUZZY_NUMBER_DIGITS) continue
+            val close = sources.find(name = null, number = number) { card -> names.any { nameIsClose(it, card.name) } }
+            if (close.isNotEmpty()) return close.take(MAX_MATCHES) to true
+        }
+        sources.failure?.let { throw it }
         return emptyList<Match>() to false
+    }
+
+    /**
+     * Searches both databases, keeping the cards [keep] accepts, merged. A
+     * database that fails is skipped; [failure] is set only once both have.
+     */
+    private class Sources {
+        private var tcgdexError: Exception? = null
+        private var pokemonTcgError: Exception? = null
+        private var tcgdexSets: Map<String, TcgdexClient.SetBrief>? = null
+        val failure: Exception? get() = if (tcgdexError != null && pokemonTcgError != null) tcgdexError else null
+
+        suspend fun find(name: String?, number: String?, keep: (Match) -> Boolean): List<Match> {
+            val bare = number?.trimStart('0')?.ifEmpty { "0" }
+            val sameNumber = bare?.let { Regex("""0*$it(\D.*)?""") }
+            fun numberMatches(match: Match) = sameNumber == null || sameNumber.matches(match.localId)
+
+            val fromTcgdex = try {
+                val sets = tcgdexSets ?: TcgdexClient.sets().associateBy { it.id }.also { tcgdexSets = it }
+                TcgdexClient.searchCards(name = name, localId = bare).mapNotNull { card ->
+                    val set = sets[card.setId] ?: return@mapNotNull null
+                    Match(card.id, card.name, card.localId, set.id, set.name, set.official, card.imageBase)
+                }
+            } catch (exc: Exception) {
+                tcgdexError = exc
+                emptyList()
+            }
+            val fromPokemonTcg = try {
+                PokemonTcgClient.searchCards(nameWord = name?.let(::searchWord), number = bare).map { card ->
+                    Match(card.id, card.name, card.number, card.setId, card.setName, card.printedTotal, card.imageBase)
+                }
+            } catch (exc: Exception) {
+                pokemonTcgError = exc
+                emptyList()
+            }
+            return merged((fromTcgdex + fromPokemonTcg).filter { numberMatches(it) && keep(it) })
+        }
+
+        /** The longest word of [name]: the Pokémon TCG API's query matches single words. */
+        private fun searchWord(name: String): String? =
+            name.split(Regex("""[^\p{L}\d]+""")).maxByOrNull { it.length }?.takeIf { it.length >= 3 }
+    }
+
+    /**
+     * One entry per printing: TCGdex's first, then the Pokémon TCG API's that
+     * aren't the same card — same name and number, and the same set by its
+     * printed total or name (the two databases name and number sets differently).
+     * A printing TCGdex has no image for takes the other's.
+     */
+    private fun merged(matches: List<Match>): List<Match> {
+        fun letters(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+        fun same(a: Match, b: Match) = letters(a.name) == letters(b.name) &&
+            a.localId.trimStart('0') == b.localId.trimStart('0') &&
+            ((a.setOfficial > 0 && a.setOfficial == b.setOfficial) || letters(a.setName) == letters(b.setName))
+        val result = mutableListOf<Match>()
+        for (match in matches.distinctBy { it.id }) {
+            val i = result.indexOfFirst { same(it, match) }
+            if (i < 0) result += match
+            else if (result[i].imageBase == null && match.imageBase != null) result[i] = result[i].copy(imageBase = match.imageBase)
+        }
+        return result
+    }
+
+    // A number this short matches too many cards to search on alone.
+    private const val MIN_FUZZY_NUMBER_DIGITS = 2
+
+    /**
+     * Whether [read] is a misreading of [actual]: compared as letters only, at
+     * most a quarter of them different (and at least 2 allowed), counting the
+     * suffixes OCR tends to drop or garble ("ex" → "x").
+     */
+    private fun nameIsClose(read: String, actual: String): Boolean {
+        fun letters(s: String) = (coreName(s) ?: s).lowercase().filter { it.isLetter() }
+        val a = letters(read)
+        val b = letters(actual)
+        if (a.length < 3) return false
+        return editDistance(a, b) <= maxOf(2, b.length / 4)
+    }
+
+    // Prefixes and suffixes around a Pokémon's name, in a different font from it.
+    private val NAME_AFFIXES = setOf("mega", "m", "ex", "x", "gx", "v", "vmax", "vstar", "break", "lv", "prime", "star")
+
+    /** [name] without [NAME_AFFIXES] ("MEGA Gallade X" → "Gallade"); null if that changes nothing or leaves too little. */
+    private fun coreName(name: String): String? {
+        val words = name.split(Regex("""\s+""")).filter { it.isNotEmpty() }
+        val core = words.filter { it.lowercase().trim('.', '-') !in NAME_AFFIXES }.joinToString(" ")
+        return core.takeIf { it != name && core.count { c -> c.isLetter() } >= 3 }
     }
 
     /** TCGdex name search matches substrings — "Porygon" also finds Porygon2 and Porygon-Z. */

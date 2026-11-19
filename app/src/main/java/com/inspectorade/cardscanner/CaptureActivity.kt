@@ -69,6 +69,9 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
     private var camera: Camera? = null
     private var rawCaptureSupported = false
     private val side: String by lazy { intent.getStringExtra(EXTRA_SIDE) ?: SIDE_FRONT }
+    // A second photo of a side already graded, with the card turned 180° (see
+    // CornersEdgesActivity): it goes straight back once reviewed.
+    private val turned: Boolean by lazy { intent.getBooleanExtra(EXTRA_TURNED, false) }
 
     // Updated from the Camera2 session capture callback as frames stream in,
     // so we know what focus distance the lens converged on when we lock it
@@ -345,7 +348,7 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun refreshStatusText() {
-        val sideLabel = if (side == SIDE_BACK) "BACK" else "FRONT"
+        val sideLabel = (if (side == SIDE_BACK) "BACK" else "FRONT") + if (turned) " · TURNED 180°" else ""
         val rawStatus = if (rawCaptureSupported) "RAW: on" else "RAW: unsupported, using JPEG"
         val tiltStatus = if (isLevel) "Level ✓" else String.format(Locale.US, "Tilt %.0f°", overallTiltDegrees)
         binding.statusText.text = "$sideLabel · $rawStatus · $tiltStatus · $meteringStatusText"
@@ -363,10 +366,11 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
         fun mark(ok: Boolean) = if (ok) "✓" else "⚠"
         val light = mark(CaptureQuality.Issue.DARK !in issues)
         val steady = mark(CaptureQuality.Issue.MOVING !in issues)
+        val even = mark(CaptureQuality.Issue.UNEVEN_LIGHT !in issues && CaptureQuality.Issue.GLARE !in issues)
         val checks = when {
             !quality.hasSharpnessReading(now) -> getString(R.string.quality_no_card, light, steady)
             issues.isEmpty() -> getString(R.string.quality_all_good)
-            else -> getString(R.string.quality_checks, light, mark(CaptureQuality.Issue.BLURRY !in issues), steady)
+            else -> getString(R.string.quality_checks, light, mark(CaptureQuality.Issue.BLURRY !in issues), steady, even)
         }
         val advice = when (issues.firstOrNull()) {
             CaptureQuality.Issue.DARK ->
@@ -374,6 +378,8 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
                 else getString(R.string.quality_dark_no_torch)
             CaptureQuality.Issue.BLURRY -> getString(R.string.quality_blurry)
             CaptureQuality.Issue.MOVING -> getString(R.string.quality_moving)
+            CaptureQuality.Issue.UNEVEN_LIGHT -> getString(R.string.quality_uneven_light)
+            CaptureQuality.Issue.GLARE -> getString(R.string.quality_glare)
             null -> if (torchOn) getString(R.string.quality_torch_glare) else null
         }
         binding.qualityText.text = listOfNotNull(checks, advice).joinToString("\n")
@@ -381,9 +387,10 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
 
         if (now - lastQualityLogMs > QUALITY_LOG_INTERVAL_MS) {
             lastQualityLogMs = now
-            Log.d(TAG, "Quality: exposureEffort=%s edgeWidth=%s steady=%b torch=%b issues=%s".format(
+            Log.d(TAG, "Quality: exposureEffort=%s edgeWidth=%s steady=%b unevenness=%s glare=%s torch=%b issues=%s".format(
                 quality.exposureEffort?.let { "%.3f".format(it) }, quality.currentEdgeWidth?.let { "%.2f".format(it) },
-                quality.isSteady, torchOn, issues,
+                quality.isSteady, quality.currentUnevenness?.let { "%.2f".format(it) },
+                quality.currentGlare?.let { "%.3f".format(it) }, torchOn, issues,
             ))
         }
     }
@@ -405,13 +412,17 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
     private fun analyzeFrameForCardOutline(imageProxy: ImageProxy) {
         try {
             val gray = yPlaneToMat(imageProxy)
-            val (corners, edgeWidth) = try {
-                val found = CardDetector.detect(gray)
-                found to found?.let { CaptureQuality.edgeWidth(gray, it) }
+            val corners = try {
+                CardDetector.detect(gray)?.also { found ->
+                    val now = SystemClock.elapsedRealtime()
+                    quality.updateEdgeWidth(CaptureQuality.edgeWidth(gray, found), now)
+                    quality.updateLighting(
+                        CaptureQuality.surfaceUnevenness(gray, found), CaptureQuality.glareFraction(gray, found), now,
+                    )
+                } ?: null.also { quality.updateEdgeWidth(null, SystemClock.elapsedRealtime()) }
             } finally {
                 gray.release()
             }
-            quality.updateEdgeWidth(edgeWidth, SystemClock.elapsedRealtime())
 
             val quad = corners?.let { mapToViewQuad(it, imageProxy) }
             handler.post {
@@ -747,6 +758,7 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
             Intent(this, ReviewActivity::class.java).apply {
                 putExtra(ReviewActivity.EXTRA_JPEG_URI, jpegUri.toString())
                 putExtra(ReviewActivity.EXTRA_SIDE, side)
+                putExtra(ReviewActivity.EXTRA_TURNED, turned)
                 rawUri?.let { putExtra(ReviewActivity.EXTRA_RAW_URI, it.toString()) }
             }
         )
@@ -761,6 +773,8 @@ class CaptureActivity : AppCompatActivity(), SensorEventListener {
         private const val QUALITY_LOG_INTERVAL_MS = 2000L
 
         const val EXTRA_SIDE = "extra_side"
+        /** Boolean: a second photo with the card turned 180°; the result carries its [ReviewActivity.EXTRA_JPEG_URI]. */
+        const val EXTRA_TURNED = "extra_turned"
         const val SIDE_FRONT = "FRONT"
         const val SIDE_BACK = "BACK"
     }

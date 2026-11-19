@@ -81,6 +81,12 @@ class GradeSummaryActivity : AppCompatActivity() {
             if (!side.centeringCounted) {
                 add(getString(R.string.grade_summary_centering_not_counted, if (side.isFront) "front" else "back"))
             }
+            if (side.possibleDings.isNotEmpty()) {
+                add(getString(
+                    R.string.grade_summary_possible_dings, if (side.isFront) "front" else "back",
+                    side.possibleDings.joinToString(", "),
+                ))
+            }
             if (side.cornerGrade == null || side.edgeGrade == null) {
                 add(getString(R.string.grade_summary_missing_wear, if (side.isFront) "front" else "back"))
             }

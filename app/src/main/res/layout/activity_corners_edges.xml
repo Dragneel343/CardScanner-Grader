@@ -86,6 +86,22 @@
         android:text="@string/wear_hint"
         android:textColor="#B3FFFFFF"
         android:textSize="12sp"
+        app:layout_constraintBottom_toTopOf="@id/wearTurnButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- A second photo with the card turned 180°: shine moves, wear doesn't. -->
+    <Button
+        android:id="@+id/wearTurnButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="24dp"
+        android:layout_marginTop="8dp"
+        android:paddingVertical="10dp"
+        android:text="@string/wear_turn_button"
+        android:textColor="@color/black"
+        android:backgroundTint="@color/white"
+        android:enabled="false"
         app:layout_constraintBottom_toTopOf="@id/wearButtonRow"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />

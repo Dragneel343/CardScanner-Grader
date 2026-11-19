@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- Card lookup against the TCGdex card database. -->
+    <!-- Card lookup against the card databases (TCGdex, Pokémon TCG API). -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.camera.any" />
     <uses-feature

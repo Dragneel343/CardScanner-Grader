@@ -111,6 +111,13 @@ class CardOutlineOverlayView @JvmOverloads constructor(
     private var tiltYDegrees = 0f
     private var isLevel = false
 
+    /** Off for a tilt scan, where the phone is meant to tilt. */
+    var showLevel = true
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     /** Called by CaptureActivity as the device orientation sensor updates. */
     fun updateTilt(xDegrees: Float, yDegrees: Float, level: Boolean) {
         tiltXDegrees = xDegrees
@@ -143,7 +150,7 @@ class CardOutlineOverlayView @JvmOverloads constructor(
         } else {
             canvas.drawRect(guideRect, if (isLocked) lockedPaint else guidePaint)
         }
-        drawLevelIndicator(canvas, guideRect)
+        if (showLevel) drawLevelIndicator(canvas, guideRect)
     }
 
     private fun drawLevelIndicator(canvas: Canvas, guideRect: RectF) {

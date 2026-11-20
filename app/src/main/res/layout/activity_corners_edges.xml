@@ -102,6 +102,21 @@
         android:textColor="@color/black"
         android:backgroundTint="@color/white"
         android:enabled="false"
+        app:layout_constraintBottom_toTopOf="@id/wearSurfaceButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Surface tilt scan, not graded yet: a preview of the glare-free and shine views. -->
+    <Button
+        android:id="@+id/wearSurfaceButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="24dp"
+        android:layout_marginTop="4dp"
+        android:paddingVertical="10dp"
+        android:text="@string/wear_surface_button"
+        android:textColor="@color/white"
+        android:backgroundTint="#555555"
         app:layout_constraintBottom_toTopOf="@id/wearButtonRow"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />

@@ -130,12 +130,17 @@ class CaptureQuality {
         private const val SAMPLES_PER_SIDE = 12
         private const val PROFILE_REACH = 8
         private const val MIN_EDGE_CONTRAST = 20.0
+        // A clean rise climbs at most this much more than the 10–90% step.
+        private const val MAX_RISE_DETOUR = 1.3
+        // Clean points needed for a reading.
+        private const val MIN_EDGE_SAMPLES = 8
 
         /**
          * Median width, in pixels, of the card's cut edge across the four sides of
          * [corners] in [gray] (single-channel, 8-bit): at points along each side, the
          * distance a profile across the edge takes to climb from 10% to 90% of the
-         * way between its two sides. Null if too few points had enough contrast.
+         * way between its two sides. Null if too few points had enough contrast
+         * and a clean step.
          */
         fun edgeWidth(gray: Mat, corners: Array<Point>): Double? {
             val width = gray.cols()
@@ -180,7 +185,7 @@ class CaptureQuality {
                     edgeWidthOf(profile)?.let { widths += it / 4 }
                 }
             }
-            if (widths.size < SAMPLES_PER_SIDE) return null
+            if (widths.size < MIN_EDGE_SAMPLES) return null
             return widths.sorted()[widths.size / 2]
         }
 
@@ -203,6 +208,16 @@ class CaptureQuality {
             }
             val low = crossing(0.1) ?: return null
             val high = crossing(0.9) ?: return null
+            // Only a clean single step measures focus. Where the card's edge barely
+            // stands out (dark full arts on a dark surface) the profile is holo
+            // sparkle or a thin rim line instead, whose "rise" reads falsely wide:
+            // it wanders on the way up, or falls back past halfway beyond it.
+            val from = minOf(low, high).toInt()
+            val to = maxOf(low, high).toInt() + 1
+            val travel = (from until minOf(to, profile.size - 1)).sumOf { abs(profile[it + 1] - profile[it]) }
+            if (travel > abs(step) * 0.8 * MAX_RISE_DETOUR) return null
+            if (profile.take(from).any { (it - outside) / step > 0.5 }) return null
+            if (profile.drop(to).any { (it - outside) / step < 0.5 }) return null
             return abs(high - low)
         }
 

@@ -58,6 +58,11 @@
             android:screenOrientation="portrait" />
 
         <activity
+            android:name=".SurfaceActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
             android:name=".GradeSummaryActivity"
             android:exported="false"
             android:screenOrientation="portrait" />

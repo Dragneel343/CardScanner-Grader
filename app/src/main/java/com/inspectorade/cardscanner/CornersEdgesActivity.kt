@@ -80,6 +80,13 @@ class CornersEdgesActivity : AppCompatActivity() {
                     .putExtra(CaptureActivity.EXTRA_TURNED, true)
             )
         }
+        binding.wearSurfaceButton.setOnClickListener {
+            surfaceLauncher.launch(
+                Intent(this, CaptureActivity::class.java)
+                    .putExtra(CaptureActivity.EXTRA_SIDE, intent.getStringExtra(EXTRA_SIDE))
+                    .putExtra(CaptureActivity.EXTRA_SURFACE_SCAN, true)
+            )
+        }
 
         lifecycleScope.launch {
             val (card, analysis) = try {
@@ -116,6 +123,18 @@ class CornersEdgesActivity : AppCompatActivity() {
             binding.wearDoneButton.isEnabled = true
         }
     }
+
+    /** A finished tilt scan goes on to its result (not graded yet). */
+    private val surfaceLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { activityResult ->
+            if (activityResult.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+            val dir = activityResult.data?.getStringExtra(CaptureActivity.EXTRA_SURFACE_DIR) ?: return@registerForActivityResult
+            startActivity(
+                Intent(this, SurfaceActivity::class.java)
+                    .putExtra(SurfaceActivity.EXTRA_SURFACE_DIR, dir)
+                    .putExtra(SurfaceActivity.EXTRA_SIDE, intent.getStringExtra(EXTRA_SIDE))
+            )
+        }
 
     /**
      * The turned second photo: flattened like the first, turned back the right
